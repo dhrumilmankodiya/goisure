@@ -82,7 +82,7 @@ JWT_SECRET=your_jwt_secret
 - ✅ User Role Management (Agent, Underwriter, Admin)
 - ✅ Notifications System
 - ✅ Audit Logging
-- ⏳ Premium Calculator (Phase 2)
+- ✅ Premium Calculator with 15+ factors
 
 ## API Endpoints
 
@@ -99,6 +99,10 @@ JWT_SECRET=your_jwt_secret
 - `POST /api/cases/{id}/upload` - Upload file
 - `POST /api/cases/{id}/submit` - Submit case
 - `POST /api/cases/{id}/decision` - Make decision
+
+### Calculator
+- `POST /api/calculator/calculate` - Calculate premium with all factors
+- `POST /api/calculator/factor` - Calculate single factor
 
 ### Dashboard
 - `GET /api/dashboard/stats` - Get statistics
