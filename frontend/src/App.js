@@ -20,6 +20,7 @@ import AdminDashboardPage from "./pages/AdminDashboardPage";
 import UserManagementPage from "./pages/UserManagementPage";
 import TemplateManagerPage from "./pages/TemplateManagerPage";
 import AuditTrailPage from "./pages/AuditTrailPage";
+import PremiumCalculatorPage from "./pages/PremiumCalculatorPage";
 
 import "./App.css";
 
@@ -92,6 +93,9 @@ function AppRoutes() {
       <Route path="/admin/users" element={<ProtectedRoute allowedRoles={['admin']}><UserManagementPage /></ProtectedRoute>} />
       <Route path="/admin/templates" element={<ProtectedRoute allowedRoles={['admin']}><TemplateManagerPage /></ProtectedRoute>} />
       <Route path="/admin/audit" element={<ProtectedRoute allowedRoles={['admin']}><AuditTrailPage /></ProtectedRoute>} />
+
+      {/* Calculator Route */}
+      <Route path="/calculator" element={<ProtectedRoute><PremiumCalculatorPage /></ProtectedRoute>} />
 
       {/* Default redirect */}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

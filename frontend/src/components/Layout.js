@@ -16,6 +16,7 @@ import {
   X,
   Shield,
   CheckCircle,
+  Calculator,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -71,6 +72,7 @@ export default function Layout({ children }) {
     { label: 'My Cases', icon: FolderOpen, href: '/cases', roles: ['agent', 'admin'] },
     { label: 'New Case', icon: Plus, href: '/cases/new', roles: ['agent', 'admin'] },
     { label: 'Review Queue', icon: ClipboardList, href: '/underwriter/queue', roles: ['underwriter', 'admin'] },
+    { label: 'Premium Calculator', icon: Calculator, href: '/calculator', roles: ['agent', 'underwriter', 'admin'] },
     { label: 'Admin Dashboard', icon: Shield, href: '/admin', roles: ['admin'] },
     { label: 'User Management', icon: Users, href: '/admin/users', roles: ['admin'] },
     { label: 'Templates', icon: FileText, href: '/admin/templates', roles: ['admin'] },
