@@ -174,7 +174,7 @@ api_router = APIRouter(prefix="/api")
 # CORS - use regex patterns to allow subdomains with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*\.netlify\.app|https://.*\.trycloudflare\.com|https://.*\.loca\.lt|http://localhost:\d+",
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.netlify\.app|https://.*\.trycloudflare\.com|https://.*\.loca\.lt|http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
