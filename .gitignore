@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+
+# Build outputs
+frontend/build/
+frontend/dist/
+*.pyc
+
+# Environment files
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Misc
+*.bak
+*.tmp
