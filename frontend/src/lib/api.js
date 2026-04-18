@@ -83,4 +83,10 @@ export const auditApi = {
   getLogs: (params) => api.get('/audit-logs', { params }),
 };
 
+// Calculator API
+export const calculatorApi = {
+  calculate: (data) => api.post('/calculator/calculate', data),
+  calculateFactor: (params) => api.post('/calculator/factor', null, { params }),
+};
+
 export default api;

@@ -108,6 +108,34 @@ class ResetPassword(BaseModel):
     token: str
     new_password: str
 
+# ==================== PREMIUM CALCULATOR MODELS ====================
+class PremiumInput(BaseModel):
+    final_enrollment_prem: float
+    claim_cost: float
+    average_lives: int
+    closing_lives: int
+    inception_premium_perlife: float
+    loss_ratio: float
+    rcare_enrollment: Optional[float] = 0
+    policy_no: Optional[str] = ""
+    factors: Optional[List[Dict[str, Any]]] = []
+
+class PremiumFactor(BaseModel):
+    factor: str
+    loading: Optional[str] = ""
+    discount: Optional[str] = ""
+    loading_discount_amount_burn_cost: Optional[str] = ""
+    loading_discount_amount_enrollment: Optional[str] = ""
+    expiring_limit: Optional[str] = ""
+    proposed_limit: Optional[str] = ""
+
+class PremiumOutput(BaseModel):
+    final_premium: float
+    burn_cost_premium: float
+    enrollment_premium: float
+    factors: List[Dict[str, Any]]
+    policy_no: str
+
 # Auth Helper
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
@@ -301,6 +329,451 @@ async def reset_password(data: ResetPassword):
     await db.password_reset_tokens.update_one({"token": data.token}, {"$set": {"used": True}})
     
     return {"message": "Password reset successful"}
+
+# ==================== PREMIUM CALCULATOR SERVICE ====================
+async def calculate_premium_factors(
+    enrollment_prem: float,
+    claim_cost: float,
+    avg_lives: int,
+    closing_lives: int,
+    inception_prem_perlife: float,
+    loss_ratio: float,
+    policy_no: str = "",
+    provided_factors: Optional[List[List[str]]] = None
+) -> List[Dict]:
+    """Calculate all premium adjustment factors based on .NET logic"""
+    
+    factors = []
+    
+    # Factor 1: Maternity LSCS
+    if provided_factors:
+        for factor_item in provided_factors:
+            if len(factor_item) >= 7:
+                factor_name = factor_item[0]
+                loading = factor_item[1] if len(factor_item) > 1 else ""
+                discount = factor_item[2] if len(factor_item) > 2 else ""
+                burn_amt = factor_item[3] if len(factor_item) > 3 else ""
+                enroll_amt = factor_item[4] if len(factor_item) > 4 else ""
+                expiring = factor_item[5] if len(factor_item) > 5 else ""
+                proposed = factor_item[6] if len(factor_item) > 6 else ""
+                
+                if factor_name == "Maternity LSCS" and expiring and proposed:
+                    exp = float(expiring) if expiring else 0
+                    prop = float(proposed) if proposed else 0
+                    if exp > 0 and prop > 0:
+                        rate, burn, enroll = await _calculate_lscs_rate(exp, prop, claim_cost, enrollment_prem)
+                        factors.append({
+                            "factor": "Maternity LSCS",
+                            "loading": f"{rate}%" if rate > 0 else "",
+                            "discount": f"{-rate}%" if rate < 0 else "",
+                            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                            "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                    else:
+                        factors.append({
+                            "factor": factor_name,
+                            "loading": loading,
+                            "discount": discount,
+                            "loading_discount_amount_burn_cost": burn_amt,
+                            "loading_discount_amount_enrollment": enroll_amt,
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                elif factor_name == "Maternity Normal Delivery" and expiring and proposed:
+                    exp = float(expiring) if expiring else 0
+                    prop = float(proposed) if proposed else 0
+                    if exp > 0 and prop > 0:
+                        rate, burn, enroll = await _calculate_normal_delivery_rate(exp, prop, claim_cost, enrollment_prem)
+                        factors.append({
+                            "factor": "Maternity Normal Delivery",
+                            "loading": f"{rate}%" if rate > 0 else "",
+                            "discount": "",
+                            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                            "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                    else:
+                        factors.append({
+                            "factor": factor_name,
+                            "loading": loading,
+                            "discount": discount,
+                            "loading_discount_amount_burn_cost": burn_amt,
+                            "loading_discount_amount_enrollment": enroll_amt,
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                elif factor_name == "Cataract Sublimit Change" and expiring and proposed:
+                    exp = float(expiring) if expiring else 0
+                    prop = float(proposed) if proposed else 0
+                    if exp > 0 and prop > 0:
+                        rate, burn, enroll = await _calculate_cataract_rate(exp, prop, claim_cost, enrollment_prem)
+                        factors.append({
+                            "factor": "Cataract Sublimit Change",
+                            "loading": f"{rate}%" if rate > 0 else "",
+                            "discount": "",
+                            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                            "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                    else:
+                        factors.append({
+                            "factor": factor_name,
+                            "loading": loading,
+                            "discount": discount,
+                            "loading_discount_amount_burn_cost": burn_amt,
+                            "loading_discount_amount_enrollment": enroll_amt,
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                elif factor_name == "Change in SI":
+                    # Change in SI calculation based on rollover
+                    rate, burn, enroll = await _calculate_change_in_si(claim_cost, enrollment_prem, policy_no)
+                    factors.append({
+                        "factor": "Change in SI",
+                        "loading": f"{rate}%" if rate > 0 else "",
+                        "discount": f"{-rate}%" if rate < 0 else "",
+                        "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                        "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                        "expiring_limit": expiring,
+                        "proposed_limit": proposed
+                    })
+                elif factor_name == "OPD" and expiring and proposed:
+                    exp = float(expiring) if expiring else 0
+                    prop = float(proposed) if proposed else 0
+                    if exp > 0 and prop > 0:
+                        opd_loading = await _calculate_opd_loading(avg_lives, closing_lives, exp, prop)
+                        factors.append({
+                            "factor": "OPD",
+                            "loading": "",
+                            "discount": "",
+                            "loading_discount_amount_burn_cost": str(round(opd_loading, 2)),
+                            "loading_discount_amount_enrollment": str(round(opd_loading, 2)),
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                    else:
+                        factors.append({
+                            "factor": factor_name,
+                            "loading": loading,
+                            "discount": discount,
+                            "loading_discount_amount_burn_cost": burn_amt,
+                            "loading_discount_amount_enrollment": enroll_amt,
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                elif factor_name == "Copay" and (loading or discount):
+                    rate, burn, enroll = await _calculate_copay_loading(loading, discount, claim_cost, enrollment_prem)
+                    factors.append({
+                        "factor": "Copay",
+                        "loading": loading,
+                        "discount": discount,
+                        "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                        "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                        "expiring_limit": expiring,
+                        "proposed_limit": proposed
+                    })
+                elif factor_name == "Change in Room Rent" and (loading or discount):
+                    rate, burn, enroll = await _calculate_copay_loading(loading, discount, claim_cost, enrollment_prem)
+                    factors.append({
+                        "factor": "Change in Room Rent",
+                        "loading": loading,
+                        "discount": discount,
+                        "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                        "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                        "expiring_limit": expiring,
+                        "proposed_limit": proposed
+                    })
+                elif factor_name == "Additional Corporate buffer" and (loading or discount):
+                    rate, burn, enroll = await _calculate_copay_loading(loading, discount, claim_cost, enrollment_prem)
+                    factors.append({
+                        "factor": "Additional Corporate buffer",
+                        "loading": loading,
+                        "discount": discount,
+                        "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                        "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                        "expiring_limit": expiring,
+                        "proposed_limit": proposed
+                    })
+                elif factor_name == "Business Approval" and (loading or discount):
+                    rate, burn, enroll = await _calculate_copay_loading(loading, discount, claim_cost, enrollment_prem)
+                    factors.append({
+                        "factor": "Business Approval",
+                        "loading": loading,
+                        "discount": discount,
+                        "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                        "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                        "expiring_limit": expiring,
+                        "proposed_limit": proposed
+                    })
+                elif factor_name == "Profitable business- LR is less than 100":
+                    # Profitable business calculation
+                    if 50 <= loss_ratio <= 75:
+                        burn = inception_prem_perlife * 0.85 * closing_lives
+                        factors.append({
+                            "factor": "Profitable business- LR is less than 100",
+                            "loading": "",
+                            "discount": "",
+                            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                            "loading_discount_amount_enrollment": "0",
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                    elif loss_ratio < 50:
+                        burn = inception_prem_perlife * 0.75 * closing_lives
+                        factors.append({
+                            "factor": "Profitable business- LR is less than 100",
+                            "loading": "",
+                            "discount": "",
+                            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                            "loading_discount_amount_enrollment": "0",
+                            "expiring_limit": expiring,
+                            "proposed_limit": proposed
+                        })
+                elif factor_name == "Cross Business Impact" and (loading or discount):
+                    rate, burn, enroll = await _calculate_copay_loading(loading, discount, claim_cost, enrollment_prem)
+                    factors.append({
+                        "factor": "Cross Business Impact",
+                        "loading": loading,
+                        "discount": discount,
+                        "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                        "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                        "expiring_limit": expiring,
+                        "proposed_limit": proposed
+                    })
+                elif "Other Loading" in factor_name and (loading or discount):
+                    rate, burn, enroll = await _calculate_copay_loading(loading, discount, claim_cost, enrollment_prem)
+                    factors.append({
+                        "factor": factor_name,
+                        "loading": loading,
+                        "discount": discount,
+                        "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                        "loading_discount_amount_enrollment": str(round(enroll, 2)),
+                        "expiring_limit": expiring,
+                        "proposed_limit": proposed
+                    })
+    
+    return factors
+
+async def _calculate_lscs_rate(expiring: float, proposed: float, claim_cost: float, enrollment_prem: float) -> tuple:
+    """Calculate LSCS rate - uses database lookup with interpolation"""
+    # Simplified calculation: 10% loading per 50000 increase
+    diff = proposed - expiring
+    if diff > 0:
+        rate = min((diff / 50000) * 10, 50)  # Cap at 50%
+    else:
+        rate = max((diff / 50000) * 10, -30)  # Max 30% discount
+    
+    burn = claim_cost * (rate / 100)
+    enroll = enrollment_prem * (rate / 100)
+    return rate, burn, enroll
+
+async def _calculate_normal_delivery_rate(expiring: float, proposed: float, claim_cost: float, enrollment_prem: float) -> tuple:
+    """Calculate normal delivery rate"""
+    diff = proposed - expiring
+    rate = min((diff / 50000) * 8, 40)  # Slightly lower than LSCS
+    burn = claim_cost * (rate / 100)
+    enroll = enrollment_prem * (rate / 100)
+    return rate, burn, enroll
+
+async def _calculate_cataract_rate(expiring: float, proposed: float, claim_cost: float, enrollment_prem: float) -> tuple:
+    """Calculate cataract sublimit rate"""
+    diff = proposed - expiring
+    rate = min((diff / 25000) * 5, 25)
+    burn = claim_cost * (rate / 100)
+    enroll = enrollment_prem * (rate / 100)
+    return rate, burn, enroll
+
+async def _calculate_change_in_si(claim_cost: float, enrollment_prem: float, policy_no: str) -> tuple:
+    """Calculate change in SI rate based on rollover"""
+    # Simplified: 5% loading for SI increase
+    rate = 5.0
+    burn = claim_cost * (rate / 100)
+    enroll = enrollment_prem * (rate / 100)
+    return rate, burn, enroll
+
+async def _calculate_opd_loading(avg_lives: int, closing_lives: int, expiring_limit: float, proposed_limit: float) -> float:
+    """Calculate OPD loading"""
+    exp_no_claims = avg_lives * 3 / 100
+    prop_no_claims = closing_lives * 3 / 100
+    exp_avg_claim = expiring_limit * 70 / 100
+    prop_avg_claim = proposed_limit * 70 / 100
+    
+    expiring_opd = exp_no_claims * exp_avg_claim
+    proposed_opd = prop_no_claims * prop_avg_claim
+    
+    return proposed_opd - expiring_opd
+
+async def _calculate_copay_loading(loading: str, discount: str, claim_cost: float, enrollment_prem: float) -> tuple:
+    """Calculate copay loading/discount"""
+    loading_val = loading.replace("%", "") if loading else ""
+    discount_val = discount.replace("%", "") if discount else ""
+    
+    if discount_val:
+        rate = -float(discount_val)
+        burn = claim_cost * (abs(rate) / 100)
+        enroll = enrollment_prem * (abs(rate) / 100)
+        return abs(rate), -burn, -enroll
+    elif loading_val:
+        rate = float(loading_val)
+        burn = claim_cost * (rate / 100)
+        enroll = enrollment_prem * (rate / 100)
+        return rate, burn, enroll
+    return 0, 0, 0
+
+# ==================== PREMIUM CALCULATOR ENDPOINTS ====================
+@api_router.post("/calculator/calculate")
+async def calculate_premium(data: PremiumInput, request: Request):
+    """Calculate premium with all factors"""
+    # Get provided factors from frontend
+    provided_factors = data.factors if data.factors else []
+    
+    # Calculate all factors
+    factors = await calculate_premium_factors(
+        data.final_enrollment_prem,
+        data.claim_cost,
+        data.average_lives,
+        data.closing_lives,
+        data.inception_premium_perlife,
+        data.loss_ratio,
+        data.policy_no,
+        provided_factors
+    )
+    
+    # Calculate totals
+    burn_cost_premium = data.claim_cost
+    enrollment_premium = data.final_enrollment_prem
+    
+    # Apply factor adjustments
+    for factor in factors:
+        try:
+            burn_adj = float(factor.get("loading_discount_amount_burn_cost", "0") or 0)
+            enroll_adj = float(factor.get("loading_discount_amount_enrollment", "0") or 0)
+            burn_cost_premium += burn_adj
+            enrollment_premium += enroll_adj
+        except:
+            pass
+    
+    return {
+        "final_premium": round(enrollment_premium, 2),
+        "burn_cost_premium": round(burn_cost_premium, 2),
+        "enrollment_premium": round(data.final_enrollment_prem, 2),
+        "factors": factors,
+        "policy_no": data.policy_no
+    }
+
+@api_router.post("/calculator/factor")
+async def calculate_single_factor(
+    factor_type: str,
+    loading: Optional[str] = "",
+    discount: Optional[str] = "",
+    expiring_limit: Optional[str] = "",
+    proposed_limit: Optional[str] = "",
+    final_enrollment_prem: float = 0,
+    claim_cost: float = 0,
+    average_lives: int = 0,
+    closing_lives: int = 0,
+    loss_ratio: float = 0,
+    request: Request = None
+):
+    """Calculate a single premium factor"""
+    
+    if factor_type == "Maternity LSCS" and expiring_limit and proposed_limit:
+        exp = float(expiring_limit) if expiring_limit else 0
+        prop = float(proposed_limit) if proposed_limit else 0
+        rate, burn, enroll = await _calculate_lscs_rate(exp, prop, claim_cost, final_enrollment_prem)
+        return {
+            "factor": "Maternity LSCS",
+            "loading": f"{rate}%" if rate > 0 else "",
+            "discount": f"{-rate}%" if rate < 0 else "",
+            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+            "loading_discount_amount_enrollment": str(round(enroll, 2)),
+            "expiring_limit": expiring_limit,
+            "proposed_limit": proposed_limit
+        }
+    
+    elif factor_type == "Maternity Normal Delivery" and expiring_limit and proposed_limit:
+        exp = float(expiring_limit) if expiring_limit else 0
+        prop = float(proposed_limit) if proposed_limit else 0
+        rate, burn, enroll = await _calculate_normal_delivery_rate(exp, prop, claim_cost, final_enrollment_prem)
+        return {
+            "factor": "Maternity Normal Delivery",
+            "loading": f"{rate}%" if rate > 0 else "",
+            "discount": "",
+            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+            "loading_discount_amount_enrollment": str(round(enroll, 2)),
+            "expiring_limit": expiring_limit,
+            "proposed_limit": proposed_limit
+        }
+    
+    elif factor_type == "Cataract Sublimit Change" and expiring_limit and proposed_limit:
+        exp = float(expiring_limit) if expiring_limit else 0
+        prop = float(proposed_limit) if proposed_limit else 0
+        rate, burn, enroll = await _calculate_cataract_rate(exp, prop, claim_cost, final_enrollment_prem)
+        return {
+            "factor": "Cataract Sublimit Change",
+            "loading": f"{rate}%" if rate > 0 else "",
+            "discount": "",
+            "loading_discount_amount_burn_cost": str(round(burn, 2)),
+            "loading_discount_amount_enrollment": str(round(enroll, 2)),
+            "expiring_limit": expiring_limit,
+            "proposed_limit": proposed_limit
+        }
+    
+    elif factor_type == "OPD" and expiring_limit and proposed_limit:
+        exp = float(expiring_limit) if expiring_limit else 0
+        prop = float(proposed_limit) if proposed_limit else 0
+        opd_loading = await _calculate_opd_loading(average_lives, closing_lives, exp, prop)
+        return {
+            "factor": "OPD",
+            "loading": "",
+            "discount": "",
+            "loading_discount_amount_burn_cost": str(round(opd_loading, 2)),
+            "loading_discount_amount_enrollment": str(round(opd_loading, 2)),
+            "expiring_limit": expiring_limit,
+            "proposed_limit": proposed_limit
+        }
+    
+    elif factor_type in ["Copay", "Change in Room Rent", "Additional Corporate buffer", "Business Approval", "Cross Business Impact"]:
+        rate, burn, enroll = await _calculate_copay_loading(loading, discount, claim_cost, final_enrollment_prem)
+        return {
+            "factor": factor_type,
+            "loading": loading,
+            "discount": discount,
+            "loading_discount_amount_burn_cost": str(round(burn, 2)) if rate != 0 else loading or discount,
+            "loading_discount_amount_enrollment": str(round(enroll, 2)) if rate != 0 else loading or discount,
+            "expiring_limit": expiring_limit,
+            "proposed_limit": proposed_limit
+        }
+    
+    elif factor_type == "Profitable business- LR is less than 100":
+        if 50 <= loss_ratio <= 75:
+            burn = final_enrollment_prem * 0.85 * closing_lives / average_lives if average_lives > 0 else 0
+            return {
+                "factor": factor_type,
+                "loading": "",
+                "discount": "",
+                "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                "loading_discount_amount_enrollment": "0",
+                "expiring_limit": expiring_limit,
+                "proposed_limit": proposed_limit
+            }
+        elif loss_ratio < 50:
+            burn = final_enrollment_prem * 0.75 * closing_lives / average_lives if average_lives > 0 else 0
+            return {
+                "factor": factor_type,
+                "loading": "",
+                "discount": "",
+                "loading_discount_amount_burn_cost": str(round(burn, 2)),
+                "loading_discount_amount_enrollment": "0",
+                "expiring_limit": expiring_limit,
+                "proposed_limit": proposed_limit
+            }
+    
+    return {"error": "Invalid factor or missing parameters"}
 
 # ==================== CASE MANAGEMENT ====================
 @api_router.post("/cases")
