@@ -49,8 +49,16 @@ def get_db():
         if not mongo_url:
             logger.warning("MONGO_URL not set")
             return None
-        _client = AsyncIOMotorClient(mongo_url)
-        _db = _client[db_name]
+        try:
+            _client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
+            # Test connection
+            _client.admin.command('ping')
+            _db = _client[db_name]
+            logger.info(f"Connected to MongoDB: {db_name}")
+        except Exception as e:
+            logger.error(f"MongoDB connection failed: {e}")
+            _client = None
+            _db = None
     return _db
 
 JWT_ALGORITHM = "HS256"
