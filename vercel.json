@@ -7,7 +7,6 @@
     { "source": "/(.*)", "destination": "/frontend/build/index.html" }
   ],
   "env": {
-    "PYTHONPATH": "backend",
-    "REACT_APP_BACKEND_URL": "https://project-teaxw.vercel.app"
+    "PYTHONPATH": "api"
   }
 }

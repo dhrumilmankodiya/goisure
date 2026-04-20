@@ -7,12 +7,16 @@ import sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-_backend_path = Path(__file__).parent.parent / "backend"
-sys.path.insert(0, str(_backend_path))
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Fix path for Vercel serverless - we're in api/ directory
+_api_dir = Path(__file__).parent.resolve()
+_root_dir = _api_dir.parent
+sys.path.insert(0, str(_root_dir))
 
 from dotenv import load_dotenv
-load_dotenv()
+# Try loading .env from root (for local dev)
+_dotenv_path = _root_dir / ".env"
+if _dotenv_path.exists():
+    load_dotenv(_dotenv_path)
 
 import logging
 logging.basicConfig(level=logging.INFO)
