@@ -37,8 +37,8 @@ import json
 import uuid
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# MongoDB connection
-_client = None  # MongoClient or False (failed)
+# MongoDB connection - minimal configuration for Vercel
+_client = None
 _db = None
 
 def get_db():
@@ -50,33 +50,32 @@ def get_db():
         logger.warning("MONGO_URL not set")
         return None
     
-    # If we have a working connection, use it
+    # Reuse existing connection if available
     if _db is not None:
-        return _db
+        try:
+            # Quick ping to verify connection still works
+            _client.admin.command('ping')
+            return _db
+        except Exception:
+            # Connection stale, reset
+            _client = None
+            _db = None
     
-    # If we previously failed, try again (might be temporary)
+    # Skip retry if we recently failed
     if _client is False:
-        logger.info("Retrying MongoDB connection after previous failure...")
+        # Wait a bit before retrying
+        import time
+        time.sleep(1)
         
     try:
-        import ssl
-        mongo_url = os.environ.get("MONGO_URL", "")
-        
-        # Create SSL context that doesn't verify certificates
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
+        # Minimal connection - let motor handle defaults
         client = AsyncIOMotorClient(
             mongo_url,
-            serverSelectionTimeoutMS=30000, 
-            connectTimeoutMS=30000,
-            socketTimeoutMS=30000,
-            maxPoolSize=10,
-            retryWrites=True,
-            retryReads=True,
-            ssl=True,
-            ssl_cert_reqs=ssl.CERT_NONE
+            serverSelectionTimeoutMS=15000, 
+            connectTimeoutMS=15000,
+            maxPoolSize=1,
+            minPoolSize=0,
+            maxIdleTimeMS=5000
         )
         # Verify connection
         client.admin.command('ping')
@@ -86,24 +85,9 @@ def get_db():
         return _db
     except Exception as e:
         logger.error(f"MongoDB connection failed: {e}")
-        # Try without SSL as last resort
-        try:
-            client = AsyncIOMotorClient(
-                mongo_url.replace("mongodb+srv", "mongodb"),
-                serverSelectionTimeoutMS=30000, 
-                connectTimeoutMS=30000,
-                maxPoolSize=10
-            )
-            client.admin.command('ping')
-            _client = client
-            _db = client[db_name]
-            logger.info(f"Connected to MongoDB (fallback): {db_name}")
-            return _db
-        except Exception as e2:
-            logger.error(f"MongoDB fallback failed: {e2}")
-            _client = False
-            _db = None
-            return None
+        _client = False
+        _db = None
+        return None
 
 JWT_ALGORITHM = "HS256"
 SECRET_KEY = os.environ.get("JWT_SECRET", "fallback-secret-for-dev")
