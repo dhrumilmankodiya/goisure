@@ -30,3 +30,4 @@ logs/
 # Misc
 *.bak
 *.tmp
+.vercel
