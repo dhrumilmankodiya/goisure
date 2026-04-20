@@ -56,16 +56,13 @@ def get_db():
         return None
         
     try:
-        # MongoDB Atlas connection from Vercel - use URL with TLS options
+        import ssl
         mongo_url = os.environ.get("MONGO_URL", "")
         
-        # Add TLS options to bypass certificate issues on Vercel
-        if "tls=true" not in mongo_url.lower():
-            # Append TLS options to connection string
-            if "?" in mongo_url:
-                mongo_url += "&tls=true&tlsAllowInvalidCertificates=true"
-            else:
-                mongo_url += "/?tls=true&tlsAllowInvalidCertificates=true"
+        # Create SSL context that doesn't verify certificates
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
         
         client = AsyncIOMotorClient(
             mongo_url,
@@ -74,7 +71,9 @@ def get_db():
             socketTimeoutMS=30000,
             maxPoolSize=10,
             retryWrites=True,
-            retryReads=True
+            retryReads=True,
+            ssl=True,
+            ssl_cert_reqs=ssl.CERT_NONE
         )
         # Verify connection
         client.admin.command('ping')
@@ -84,8 +83,23 @@ def get_db():
         return _db
     except Exception as e:
         logger.error(f"MongoDB connection failed: {e}")
-        _client = False
-        return None
+        # Try without SSL as last resort
+        try:
+            client = AsyncIOMotorClient(
+                mongo_url.replace("mongodb+srv", "mongodb"),
+                serverSelectionTimeoutMS=30000, 
+                connectTimeoutMS=30000,
+                maxPoolSize=10
+            )
+            client.admin.command('ping')
+            _client = client
+            _db = client[db_name]
+            logger.info(f"Connected to MongoDB (fallback): {db_name}")
+            return _db
+        except Exception as e2:
+            logger.error(f"MongoDB fallback failed: {e2}")
+            _client = False
+            return None
 
 JWT_ALGORITHM = "HS256"
 SECRET_KEY = os.environ.get("JWT_SECRET", "fallback-secret-for-dev")
