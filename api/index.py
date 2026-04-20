@@ -38,22 +38,25 @@ import uuid
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # MongoDB connection
-_client = None
+_client = None  # MongoClient or False (failed)
 _db = None
 
 def get_db():
     global _client, _db
-    if _db is not None:
-        return _db
-        
     mongo_url = os.environ.get("MONGO_URL", "")
     db_name = os.environ.get("DB_NAME", "goisure")
+    
     if not mongo_url:
         logger.warning("MONGO_URL not set")
         return None
     
+    # If we have a working connection, use it
+    if _db is not None:
+        return _db
+    
+    # If we previously failed, try again (might be temporary)
     if _client is False:
-        return None
+        logger.info("Retrying MongoDB connection after previous failure...")
         
     try:
         import ssl
@@ -99,6 +102,7 @@ def get_db():
         except Exception as e2:
             logger.error(f"MongoDB fallback failed: {e2}")
             _client = False
+            _db = None
             return None
 
 JWT_ALGORITHM = "HS256"
