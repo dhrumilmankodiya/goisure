@@ -1,26 +1,23 @@
 """
-Vercel Python Serverless Function - Embedded FastAPI backend
-This file contains the complete FastAPI app for Vercel serverless deployment.
+Vercel Python Serverless Function - GMC Platform API
 """
 import os
 import sys
 from pathlib import Path
 
-# Ensure backend modules are importable
 _backend_path = Path(__file__).parent.parent / "backend"
 sys.path.insert(0, str(_backend_path))
-# Also ensure root for backend package imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
@@ -30,15 +27,14 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Lazy MongoDB connection
 _client = None
 _db = None
 
 def get_db():
     global _client, _db
     if _db is None:
-        mongo_url = os.environ.get('MONGO_URL', '')
-        db_name = os.environ.get('DB_NAME', 'goisure')
+        mongo_url = os.environ.get("MONGO_URL", "")
+        db_name = os.environ.get("DB_NAME", "goisure")
         if not mongo_url:
             logger.warning("MONGO_URL not set")
             return None
@@ -49,8 +45,7 @@ def get_db():
 JWT_ALGORITHM = "HS256"
 
 def get_jwt_secret() -> str:
-    secret = os.environ.get("JWT_SECRET", "fallback-secret-for-dev")
-    return secret
+    return os.environ.get("JWT_SECRET", "fallback-secret")
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -66,7 +61,6 @@ def create_refresh_token(user_id: str) -> str:
     payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
-# Pydantic models
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
@@ -95,7 +89,7 @@ async def get_current_user(request: Request) -> dict:
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
         db = get_db()
-        if not db:
+        if db is None:
             raise HTTPException(status_code=503, detail="Database not configured")
         user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
         if not user:
@@ -109,11 +103,9 @@ async def get_current_user(request: Request) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# Create FastAPI app
 app = FastAPI(title="GMC Platform API")
 api_router = APIRouter(prefix="/api")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.netlify\.app|https://.*\.trycloudflare\.com|http://localhost:\d+",
@@ -122,17 +114,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Health check
 @api_router.get("/health")
 async def health():
     db = get_db()
-    return {"status": "healthy", "service": "gmc-platform", "db": "connected" if db else "not_configured"}
+    return {"status": "healthy", "service": "gmc-platform", "db": "connected" if db is not None else "not_configured"}
 
-# Auth endpoints
 @api_router.post("/auth/register")
 async def register(data: UserCreate, response: Response):
     db = get_db()
-    if not db:
+    if db is None:
         return JSONResponse({"error": "Database not configured"}, status_code=503)
     email = data.email.lower()
     existing = await db.users.find_one({"email": email})
@@ -157,7 +147,7 @@ async def register(data: UserCreate, response: Response):
 @api_router.post("/auth/login")
 async def login(data: UserLogin, response: Response):
     db = get_db()
-    if not db:
+    if db is None:
         return JSONResponse({"error": "Database not configured"}, status_code=503)
     email = data.email.lower()
     user = await db.users.find_one({"email": email})
@@ -178,7 +168,7 @@ async def get_me(request: Request):
 async def list_cases(request: Request):
     user = await get_current_user(request)
     db = get_db()
-    if not db:
+    if db is None:
         return {"cases": [], "total": 0}
     cursor = db.cases.find({"created_by": user["id"]}).sort("created_at", -1).limit(50)
     cases = []
@@ -191,7 +181,7 @@ async def list_cases(request: Request):
 async def create_case(data: CaseCreate, request: Request):
     user = await get_current_user(request)
     db = get_db()
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database not configured")
     case_doc = {
         "client_name": data.client_name,
@@ -209,7 +199,7 @@ async def create_case(data: CaseCreate, request: Request):
 async def dashboard_stats(request: Request):
     user = await get_current_user(request)
     db = get_db()
-    if not db:
+    if db is None:
         return {"total_cases": 0, "pending": 0, "approved": 0, "rejected": 0}
     total = await db.cases.count_documents({"created_by": user["id"]})
     pending = await db.cases.count_documents({"created_by": user["id"], "status": "pending"})
@@ -217,10 +207,8 @@ async def dashboard_stats(request: Request):
     rejected = await db.cases.count_documents({"created_by": user["id"], "status": "rejected"})
     return {"total_cases": total, "pending": pending, "approved": approved, "rejected": rejected}
 
-# Include router in app
 app.include_router(api_router)
 
-# Mangum handler
 try:
     from mangum import Mangum
     handler = Mangum(app, lifespan="off")
