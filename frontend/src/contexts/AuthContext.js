@@ -3,7 +3,7 @@ import axios from 'axios';
 
 const AuthContext = createContext(null);
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
+const API_URL = process.env.REACT_APP_BACKEND_URL || ''; // Use relative URLs if not set
 
 // Configure axios defaults - use cookies for auth
 axios.defaults.withCredentials = true;
