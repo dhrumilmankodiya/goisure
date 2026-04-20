@@ -175,27 +175,33 @@ async def health():
 # ============ Auth Endpoints ============
 @api_router.post("/auth/register")
 async def register(data: UserCreate, response: Response):
-    db = get_db()
-    if db is None:
-        return JSONResponse({"error": "Database not configured"}, status_code=503)
-    email = data.email.lower()
-    existing = await db.users.find_one({"email": email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user_doc = {
-        "email": email,
-        "password_hash": hash_password(data.password),
-        "name": data.name,
-        "role": data.role if data.role in ["agent", "underwriter", "admin"] else "agent",
-        "is_active": True,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    result = await db.users.insert_one(user_doc)
-    user_id = str(result.inserted_id)
-    access_token = create_access_token(user_id, email)
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=True, samesite="none", max_age=3600, path="/")
-    response.set_cookie(key="refresh_token", value=create_refresh_token(user_id), httponly=True, secure=True, samesite="none", max_age=604800, path="/")
-    return {"id": user_id, "email": email, "name": data.name, "role": user_doc["role"], "access_token": access_token}
+    try:
+        db = get_db()
+        if db is None:
+            return JSONResponse({"error": "Database not configured"}, status_code=503)
+        email = data.email.lower()
+        existing = await db.users.find_one({"email": email})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        user_doc = {
+            "email": email,
+            "password_hash": hash_password(data.password),
+            "name": data.name,
+            "role": data.role if data.role in ["agent", "underwriter", "admin"] else "agent",
+            "is_active": True,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        result = await db.users.insert_one(user_doc)
+        user_id = str(result.inserted_id)
+        access_token = create_access_token(user_id, email)
+        response.set_cookie(key="access_token", value=access_token, httponly=True, secure=True, samesite="none", max_age=3600, path="/")
+        response.set_cookie(key="refresh_token", value=create_refresh_token(user_id), httponly=True, secure=True, samesite="none", max_age=604800, path="/")
+        return {"id": user_id, "email": email, "name": data.name, "role": user_doc["role"], "access_token": access_token}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @api_router.post("/auth/login")
 async def login(data: UserLogin, response: Response):
