@@ -23,16 +23,44 @@ import secrets
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Lazy MongoDB connection - only connects when first accessed
+# This prevents 500 crashes on Vercel cold start when env vars are not yet set
+_client = None
+_db = None
+
+def get_db():
+    """Lazy database accessor - initializes on first use."""
+    global _client, _db
+    if _db is None:
+        mongo_url = os.environ.get('MONGO_URL', '')
+        db_name = os.environ.get('DB_NAME', 'goisure')
+        if not mongo_url:
+            logger.warning("MONGO_URL not set - database operations will fail")
+        _client = AsyncIOMotorClient(mongo_url) if mongo_url else None
+        _db = _client[db_name] if _client else None
+    return _db
+
+# For backward compatibility with existing code that uses `db` directly
+# Use get_db() in new code; this is lazily resolved on each access
+class LazyDB:
+    """Proxy that lazily resolves to the actual db object."""
+    def __getattr__(self, name):
+        return getattr(get_db(), name)
+    def __getitem__(self, key):
+        return get_db()[key]
+    def __call__(self, *args, **kwargs):
+        return get_db()(*args, **kwargs)
+db = LazyDB()
 
 # JWT Configuration
 JWT_ALGORITHM = "HS256"
 
 def get_jwt_secret() -> str:
-    return os.environ["JWT_SECRET"]
+    secret = os.environ.get("JWT_SECRET", "")
+    if not secret:
+        logger.warning("JWT_SECRET not set - using insecure default (DO NOT USE IN PRODUCTION)")
+        secret = "INSECURE_DEFAULT_CHANGE_ME"
+    return secret
 
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
@@ -171,10 +199,11 @@ async def require_role(request: Request, roles: List[str]) -> dict:
 app = FastAPI(title="GMC Platform API")
 api_router = APIRouter(prefix="/api")
 
-# CORS - use regex patterns to allow subdomains with credentials
+# CORS - allow all Vercel domains (including project-level URLs without subdomains)
+# and other common deployment platforms with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.netlify\.app|https://.*\.trycloudflare\.com|https://.*\.loca\.lt|http://localhost:\d+",
+    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|http://localhost:\d+|null",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1544,7 +1573,9 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    client.close()
+    global _client
+    if _client is not None:
+        _client.close()
 
 if __name__ == "__main__":
     import uvicorn
