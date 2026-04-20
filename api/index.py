@@ -35,9 +35,9 @@ import pandas as pd
 import io
 import json
 import uuid
-import asyncio
+from motor.motor_asyncio import AsyncIOMotorClient
 
-# MongoDB connection - cache with lazy initialization
+# MongoDB connection
 _client = None
 _db = None
 
@@ -52,20 +52,31 @@ def get_db():
         logger.warning("MONGO_URL not set")
         return None
     
-    # Check if we previously failed - don't retry immediately
     if _client is False:
         return None
         
     try:
+        # MongoDB Atlas connection from Vercel - use URL with TLS options
+        mongo_url = os.environ.get("MONGO_URL", "")
+        
+        # Add TLS options to bypass certificate issues on Vercel
+        if "tls=true" not in mongo_url.lower():
+            # Append TLS options to connection string
+            if "?" in mongo_url:
+                mongo_url += "&tls=true&tlsAllowInvalidCertificates=true"
+            else:
+                mongo_url += "/?tls=true&tlsAllowInvalidCertificates=true"
+        
         client = AsyncIOMotorClient(
-            mongo_url, 
-            serverSelectionTimeoutMS=20000, 
-            connectTimeoutMS=20000,
+            mongo_url,
+            serverSelectionTimeoutMS=30000, 
+            connectTimeoutMS=30000,
+            socketTimeoutMS=30000,
             maxPoolSize=10,
             retryWrites=True,
             retryReads=True
         )
-        # Verify connection works
+        # Verify connection
         client.admin.command('ping')
         _client = client
         _db = client[db_name]
@@ -73,7 +84,6 @@ def get_db():
         return _db
     except Exception as e:
         logger.error(f"MongoDB connection failed: {e}")
-        # Mark as failed to avoid hammering
         _client = False
         return None
 
