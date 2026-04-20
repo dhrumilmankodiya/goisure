@@ -37,29 +37,35 @@ import json
 import uuid
 import asyncio
 
-# MongoDB connection
+# MongoDB connection - don't cache, always test fresh
 _client = None
 _db = None
 
 def get_db():
     global _client, _db
-    if _db is None:
-        mongo_url = os.environ.get("MONGO_URL", "")
-        db_name = os.environ.get("DB_NAME", "goisure")
-        if not mongo_url:
-            logger.warning("MONGO_URL not set")
-            return None
-        try:
-            _client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
-            # Test connection
-            _client.admin.command('ping')
-            _db = _client[db_name]
-            logger.info(f"Connected to MongoDB: {db_name}")
-        except Exception as e:
-            logger.error(f"MongoDB connection failed: {e}")
-            _client = None
-            _db = None
-    return _db
+    mongo_url = os.environ.get("MONGO_URL", "")
+    db_name = os.environ.get("DB_NAME", "goisure")
+    if not mongo_url:
+        logger.warning("MONGO_URL not set")
+        return None
+    try:
+        # Use tlsAllowInvalidCertificates for Vercel environment
+        client = AsyncIOMotorClient(
+            mongo_url, 
+            serverSelectionTimeoutMS=10000, 
+            connectTimeoutMS=10000,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+            tlsAllowInvalidHostnames=True
+        )
+        # Test connection
+        client.admin.command('ping')
+        _db = client[db_name]
+        logger.info(f"Connected to MongoDB: {db_name}")
+        return _db
+    except Exception as e:
+        logger.error(f"MongoDB connection failed: {e}")
+        return None
 
 JWT_ALGORITHM = "HS256"
 SECRET_KEY = os.environ.get("JWT_SECRET", "fallback-secret-for-dev")
