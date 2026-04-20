@@ -37,34 +37,44 @@ import json
 import uuid
 import asyncio
 
-# MongoDB connection - don't cache, always test fresh
+# MongoDB connection - cache with lazy initialization
 _client = None
 _db = None
 
 def get_db():
     global _client, _db
+    if _db is not None:
+        return _db
+        
     mongo_url = os.environ.get("MONGO_URL", "")
     db_name = os.environ.get("DB_NAME", "goisure")
     if not mongo_url:
         logger.warning("MONGO_URL not set")
         return None
+    
+    # Check if we previously failed - don't retry immediately
+    if _client is False:
+        return None
+        
     try:
-        # Use tlsAllowInvalidCertificates for Vercel environment
         client = AsyncIOMotorClient(
             mongo_url, 
-            serverSelectionTimeoutMS=10000, 
-            connectTimeoutMS=10000,
-            tls=True,
-            tlsAllowInvalidCertificates=True,
-            tlsAllowInvalidHostnames=True
+            serverSelectionTimeoutMS=20000, 
+            connectTimeoutMS=20000,
+            maxPoolSize=10,
+            retryWrites=True,
+            retryReads=True
         )
-        # Test connection
+        # Verify connection works
         client.admin.command('ping')
+        _client = client
         _db = client[db_name]
         logger.info(f"Connected to MongoDB: {db_name}")
         return _db
     except Exception as e:
         logger.error(f"MongoDB connection failed: {e}")
+        # Mark as failed to avoid hammering
+        _client = False
         return None
 
 JWT_ALGORITHM = "HS256"
