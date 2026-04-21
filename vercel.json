@@ -3,7 +3,10 @@
   "outputDirectory": "frontend/build",
   "framework": "create-react-app",
   "python": "3.11",
+  "routes": [
+    { "src": "/api/(?<path>.*)", "dest": "/api/index.py" }
+  ],
   "env": {
-    "PYTHONPATH": "api"
+    "PYTHONPATH": "."
   }
 }
