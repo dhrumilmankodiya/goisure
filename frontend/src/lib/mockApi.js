@@ -1,151 +1,236 @@
-// Mock data for the GMC Platform
+// Mock data for the GMC Platform - Demo Mode
 // Returns realistic dummy data for all screens
+// Uses in-memory storage for new cases (no backend needed)
 
-// Hardcoded to true for demo mode - no backend needed
 const MOCK_MODE = true;
 
-// Generate realistic dummy users
-const mockUsers = [
-  { id: '1', email: 'admin@goisure.com', name: 'Admin User', role: 'admin', created_at: '2024-01-15T10:00:00Z' },
-  { id: '2', email: 'underwriter@goisure.com', name: 'John Underwriter', role: 'underwriter', created_at: '2024-02-01T10:00:00Z' },
-  { id: '3', email: 'agent@goisure.com', name: 'Sarah Agent', role: 'agent', created_at: '2024-03-10T10:00:00Z' },
-  { id: '4', email: 'agent2@goisure.com', name: 'Mike Agent', role: 'agent', created_at: '2024-03-15T10:00:00Z' },
-];
+// ============ In-Memory Storage ============
+let mockCasesStore = [];
+let mockUsersStore = [];
+let mockSessionsStore = {};
 
-// Generate realistic dummy cases
-const generateMockCases = () => [
-  {
-    id: 'case-001',
-    client_name: 'TechCorp Industries',
-    policy_type: 'GMC',
-    business_type: 'fresh',
-    status: 'draft',
-    created_by: '3',
-    created_by_name: 'Sarah Agent',
-    created_at: '2024-06-01T10:30:00Z',
-    updated_at: '2024-06-01T10:30:00Z',
-    notes: 'New corporate client for health insurance',
-  },
-  {
-    id: 'case-002',
-    client_name: 'Global Services Ltd',
-    policy_type: 'GMC',
-    business_type: 'renewal',
-    status: 'uploaded',
-    created_by: '3',
-    created_by_name: 'Sarah Agent',
-    created_at: '2024-05-28T14:20:00Z',
-    updated_at: '2024-05-29T09:15:00Z',
-    filename: 'employees_data.xlsx',
-    record_count: 150,
-  },
-  {
-    id: 'case-003',
-    client_name: 'StartupXYZ Pvt Ltd',
-    policy_type: 'GMC',
-    business_type: 'fresh',
-    status: 'mapping_applied',
-    created_by: '4',
-    created_by_name: 'Mike Agent',
-    created_at: '2024-05-25T11:00:00Z',
-    updated_at: '2024-05-26T16:45:00Z',
-    filename: 'team.xlsx',
-    record_count: 45,
-    mapping: { 'Employee ID': 'employee_id', 'Name': 'employee_name', 'Age': 'age', 'Sum Insured': 'sum_insured' },
-  },
-  {
-    id: 'case-004',
-    client_name: 'MegaCorp Holdings',
-    policy_type: 'GMC',
-    business_type: 'fresh',
-    status: 'pending_review',
-    created_by: '3',
-    created_by_name: 'Sarah Agent',
-    created_at: '2024-05-20T09:00:00Z',
-    updated_at: '2024-05-22T14:30:00Z',
-    filename: 'megacorp_employees.xlsx',
-    record_count: 500,
-    assigned_to: '2',
-    assigned_to_name: 'John Underwriter',
-  },
-  {
-    id: 'case-005',
-    client_name: 'Healthcare Plus',
-    policy_type: 'GMC',
-    business_type: 'renewal',
-    status: 'under_review',
-    created_by: '4',
-    created_by_name: 'Mike Agent',
-    created_at: '2024-05-18T08:00:00Z',
-    updated_at: '2024-05-21T11:20:00Z',
-    filename: 'renewal_2024.xlsx',
-    record_count: 280,
-    assigned_to: '2',
-    assigned_to_name: 'John Underwriter',
-  },
-  {
-    id: 'case-006',
-    client_name: 'EduTech Solutions',
-    policy_type: 'GMC',
-    business_type: 'fresh',
-    status: 'approved',
-    created_by: '3',
-    created_by_name: 'Sarah Agent',
-    created_at: '2024-05-10T10:00:00Z',
-    updated_at: '2024-05-15T16:00:00Z',
-    filename: 'edutech_staff.xlsx',
-    record_count: 85,
-    premium: 425000,
-    assigned_to: '2',
-    assigned_to_name: 'John Underwriter',
-  },
-  {
-    id: 'case-007',
-    client_name: 'FinanceFirst Ltd',
-    policy_type: 'GMC',
-    business_type: 'fresh',
-    status: 'rejected',
-    created_by: '4',
-    created_by_name: 'Mike Agent',
-    created_at: '2024-05-05T12:00:00Z',
-    updated_at: '2024-05-08T14:00:00Z',
-    rejection_reason: 'High risk profile - claim ratio exceeds threshold',
-  },
-  {
-    id: 'case-008',
-    client_name: 'Retail Giants',
-    policy_type: 'GMC',
-    business_type: 'fresh',
-    status: 'draft',
-    created_by: '3',
-    created_by_name: 'Sarah Agent',
-    created_at: '2024-06-02T15:00:00Z',
-    updated_at: '2024-06-02T15:00:00Z',
-    notes: 'Waiting for employee data from HR',
-  },
-];
+// Initialize with hardcoded test data
+const initializeMockData = () => {
+  // Hardcoded test users - Super Admin, Underwriters, Agents
+  mockUsersStore = [
+    { id: 'super-admin', email: 'superadmin@goisure.com', name: 'Super Admin', role: 'superadmin', password: 'admin123', created_at: '2024-01-01T00:00:00Z', is_active: true },
+    { id: 'admin-001', email: 'admin@goisure.com', name: 'Admin User', role: 'admin', password: 'admin123', created_at: '2024-01-15T10:00:00Z', is_active: true },
+    { id: 'uw-001', email: 'underwriter@goisure.com', name: 'John Underwriter', role: 'underwriter', password: 'agent123', created_at: '2024-02-01T10:00:00Z', is_active: true },
+    { id: 'uw-002', email: 'underwriter2@goisure.com', name: 'Priya Sharma', role: 'underwriter', password: 'agent123', created_at: '2024-02-15T10:00:00Z', is_active: true },
+    { id: 'agent-001', email: 'agent@goisure.com', name: 'Sarah Agent', role: 'agent', password: 'agent123', created_at: '2024-03-10T10:00:00Z', is_active: true },
+    { id: 'agent-002', email: 'agent2@goisure.com', name: 'Mike Agent', role: 'agent', password: 'agent123', created_at: '2024-03-15T10:00:00Z', is_active: true },
+    { id: 'agent-003', email: 'agent3@goisure.com', name: 'Emma Wilson', role: 'agent', password: 'agent123', created_at: '2024-04-01T10:00:00Z', is_active: true },
+    { id: 'agent-004', email: 'agent4@goisure.com', name: 'Raj Patel', role: 'agent', password: 'agent123', created_at: '2024-04-10T10:00:00Z', is_active: true },
+  ];
 
-// Mock employee data for case details
+  // Hardcoded test cases covering all scenarios
+  mockCasesStore = [
+    // Draft cases (created by agents, not yet submitted)
+    {
+      id: 'case-1001',
+      client_name: 'TechCorp Industries',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'draft',
+      created_by: 'agent-001',
+      created_by_name: 'Sarah Agent',
+      created_at: '2024-06-01T10:30:00Z',
+      updated_at: '2024-06-01T10:30:00Z',
+      notes: 'New corporate client, waiting for employee data',
+    },
+    {
+      id: 'case-1002',
+      client_name: 'StartupXYZ Pvt Ltd',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'draft',
+      created_by: 'agent-002',
+      created_by_name: 'Mike Agent',
+      created_at: '2024-06-02T14:20:00Z',
+      updated_at: '2024-06-02T14:20:00Z',
+      notes: 'New startup, 25 employees',
+    },
+    // Uploaded cases (file uploaded, awaiting mapping)
+    {
+      id: 'case-2001',
+      client_name: 'Global Services Ltd',
+      policy_type: 'GMC',
+      business_type: 'renewal',
+      status: 'uploaded',
+      created_by: 'agent-001',
+      created_by_name: 'Sarah Agent',
+      created_at: '2024-05-28T14:20:00Z',
+      updated_at: '2024-05-29T09:15:00Z',
+      filename: 'employees_data.xlsx',
+      record_count: 150,
+    },
+    {
+      id: 'case-2002',
+      client_name: 'Retail Giants Corp',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'uploaded',
+      created_by: 'agent-003',
+      created_by_name: 'Emma Wilson',
+      created_at: '2024-05-30T11:00:00Z',
+      updated_at: '2024-05-30T16:45:00Z',
+      filename: 'retail_staff.xlsx',
+      record_count: 75,
+    },
+    // Mapping applied (ready for review)
+    {
+      id: 'case-3001',
+      client_name: 'MegaCorp Holdings',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'mapping_applied',
+      created_by: 'agent-001',
+      created_by_name: 'Sarah Agent',
+      created_at: '2024-05-25T11:00:00Z',
+      updated_at: '2024-05-26T16:45:00Z',
+      filename: 'megacorp_employees.xlsx',
+      record_count: 500,
+      mapping: { 'Employee ID': 'employee_id', 'Name': 'employee_name', 'Age': 'age', 'Sum Insured': 'sum_insured' },
+    },
+    // Pending review (submitted to underwriter)
+    {
+      id: 'case-4001',
+      client_name: 'Healthcare Plus',
+      policy_type: 'GMC',
+      business_type: 'renewal',
+      status: 'pending_review',
+      created_by: 'agent-002',
+      created_by_name: 'Mike Agent',
+      created_at: '2024-05-20T09:00:00Z',
+      updated_at: '2024-05-22T14:30:00Z',
+      filename: 'renewal_2024.xlsx',
+      record_count: 280,
+      assigned_to: 'uw-001',
+      assigned_to_name: 'John Underwriter',
+    },
+    {
+      id: 'case-4002',
+      client_name: 'EduTech Solutions',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'pending_review',
+      created_by: 'agent-003',
+      created_by_name: 'Emma Wilson',
+      created_at: '2024-05-21T10:00:00Z',
+      updated_at: '2024-05-23T09:00:00Z',
+      filename: 'edutech_team.xlsx',
+      record_count: 120,
+      assigned_to: 'uw-002',
+      assigned_to_name: 'Priya Sharma',
+    },
+    // Under review (underwriter is reviewing)
+    {
+      id: 'case-5001',
+      client_name: 'FinanceFirst Ltd',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'under_review',
+      created_by: 'agent-001',
+      created_by_name: 'Sarah Agent',
+      created_at: '2024-05-18T08:00:00Z',
+      updated_at: '2024-05-21T11:20:00Z',
+      filename: 'finance_staff.xlsx',
+      record_count: 200,
+      assigned_to: 'uw-001',
+      assigned_to_name: 'John Underwriter',
+    },
+    // Approved cases
+    {
+      id: 'case-6001',
+      client_name: 'IT Services Pro',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'approved',
+      created_by: 'agent-001',
+      created_by_name: 'Sarah Agent',
+      created_at: '2024-05-10T10:00:00Z',
+      updated_at: '2024-05-15T16:00:00Z',
+      filename: 'it_services.xlsx',
+      record_count: 85,
+      premium: 425000,
+      approved_by: 'uw-001',
+      approved_by_name: 'John Underwriter',
+    },
+    {
+      id: 'case-6002',
+      client_name: 'Manufacturing Co',
+      policy_type: 'GMC',
+      business_type: 'renewal',
+      status: 'approved',
+      created_by: 'agent-002',
+      created_by_name: 'Mike Agent',
+      created_at: '2024-05-08T09:00:00Z',
+      updated_at: '2024-05-12T14:00:00Z',
+      filename: 'renewal_mfg.xlsx',
+      record_count: 350,
+      premium: 875000,
+      approved_by: 'uw-001',
+      approved_by_name: 'John Underwriter',
+    },
+    // Rejected cases
+    {
+      id: 'case-7001',
+      client_name: 'High Risk Industries',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'rejected',
+      created_by: 'agent-003',
+      created_by_name: 'Emma Wilson',
+      created_at: '2024-05-05T12:00:00Z',
+      updated_at: '2024-05-08T14:00:00Z',
+      rejection_reason: 'High risk profile - claim ratio exceeds threshold',
+      rejected_by: 'uw-001',
+      rejected_by_name: 'John Underwriter',
+    },
+    {
+      id: 'case-7002',
+      client_name: 'Unstable Corp',
+      policy_type: 'GMC',
+      business_type: 'fresh',
+      status: 'rejected',
+      created_by: 'agent-004',
+      created_by_name: 'Raj Patel',
+      created_at: '2024-05-03T10:00:00Z',
+      updated_at: '2024-05-06T11:00:00Z',
+      rejection_reason: 'Incomplete employee data - missing age and sum insured for multiple employees',
+      rejected_by: 'uw-002',
+      rejected_by_name: 'Priya Sharma',
+    },
+  ];
+};
+
+// Initialize on load
+initializeMockData();
+
+// Mock employee data generator
 const generateEmployeeData = (count = 20) => {
   const relationships = ['Self', 'Spouse', 'Child', 'Parent'];
   const genders = ['Male', 'Female'];
   const cities = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Pune', 'Kolkata', 'Ahmedabad'];
+  const departments = ['Engineering', 'Sales', 'Marketing', 'HR', 'Finance', 'Operations', 'IT', 'Support'];
   
+  const names = [
+    'Rahul Sharma', 'Priya Patel', 'Amit Kumar', 'Sneha Reddy', 'Vikram Singh',
+    'Anjali Desai', 'Raj Malhotra', 'Kavita Nair', 'Sanjay Gupta', 'Meera Shah',
+    'Deepak Joshi', 'Rita Mathew', 'Arun Khanna', 'Sunita Rao', 'Gopalakrishnan',
+    'Lakshmi Venkat', 'Ramesh Babu', 'Divya Subramanian', 'Krishnan Iyer', 'Padma Hari'
+  ];
+
   return Array.from({ length: count }, (_, i) => ({
     employee_id: `EMP${String(1000 + i).padStart(4, '0')}`,
-    employee_name: [
-      'Rahul Sharma', 'Priya Patel', 'Amit Kumar', 'Sneha Reddy', 'Vikram Singh',
-      'Anjali Desai', 'Raj Malhotra', 'Kavita Nair', 'Sanjay Gupta', 'Meera Shah',
-      'Deepak Joshi', 'Rita Mathew', 'Arun Khanna', 'Sunita Rao', 'Gopalakrishnan',
-      'Lakshmi Venkat', 'Ramesh Babu', 'Divya Subramanian', 'Krishnan Iyer', 'Padma Hari'
-    ][i % 20],
+    employee_name: names[i % names.length],
     age: 25 + (i % 35),
     gender: genders[i % 2],
     relationship: relationships[i % 4],
     sum_insured: [100000, 200000, 300000, 500000, 750000, 1000000][i % 6],
     premium: Math.round([100000, 200000, 300000, 500000, 750000, 1000000][i % 6] * 0.012),
     city: cities[i % 8],
-    department: ['Engineering', 'Sales', 'Marketing', 'HR', 'Finance', 'Operations'][i % 6],
+    department: departments[i % 8],
   }));
 };
 
@@ -156,66 +241,119 @@ const mockTemplates = [
   { id: 'tpl-003', name: 'Top-up Plan', description: 'High coverage top-up insurance', fields: ['employee_id', 'base_cover', 'top_up_cover'], created_at: '2024-03-20T00:00:00Z' },
 ];
 
-// Mock audit logs
-const generateAuditLogs = () => [
-  { id: 'log-001', action: 'case_created', user: 'Sarah Agent', case_id: 'case-001', details: 'Created new case for TechCorp Industries', timestamp: '2024-06-01T10:30:00Z' },
-  { id: 'log-002', action: 'file_uploaded', user: 'Sarah Agent', case_id: 'case-002', details: 'Uploaded employees_data.xlsx (150 records)', timestamp: '2024-05-29T09:15:00Z' },
-  { id: 'log-003', action: 'mapping_applied', user: 'Mike Agent', case_id: 'case-003', details: 'Applied column mapping', timestamp: '2024-05-26T16:45:00Z' },
-  { id: 'log-004', action: 'submitted_for_review', user: 'Sarah Agent', case_id: 'case-004', details: 'Submitted to underwriter', timestamp: '2024-05-22T14:30:00Z' },
-  { id: 'log-005', action: 'review_started', user: 'John Underwriter', case_id: 'case-005', details: 'Started review process', timestamp: '2024-05-21T11:20:00Z' },
-  { id: 'log-006', action: 'case_approved', user: 'John Underwriter', case_id: 'case-006', details: 'Approved with premium: ₹425,000', timestamp: '2024-05-15T16:00:00Z' },
-  { id: 'log-007', action: 'case_rejected', user: 'John Underwriter', case_id: 'case-007', details: 'Rejected - High risk profile', timestamp: '2024-05-08T14:00:00Z' },
-];
-
 // Mock notifications
-const mockNotifications = [
-  { id: 'notif-001', type: 'case_update', message: 'Case #case-004 has been submitted for review', read: false, created_at: '2024-06-02T09:00:00Z' },
-  { id: 'notif-002', type: 'approval', message: 'Your case for Healthcare Plus has been approved', read: false, created_at: '2024-05-15T16:00:00Z' },
-  { id: 'notif-003', type: 'review', message: 'New case assigned to you: MegaCorp Holdings', read: true, created_at: '2024-05-22T14:30:00Z' },
+let mockNotificationsStore = [
+  { id: 'notif-001', type: 'case_update', message: 'Case #case-4001 submitted for review', read: false, created_at: '2024-05-22T14:30:00Z' },
+  { id: 'notif-002', type: 'approval', message: 'Case #case-6001 approved - Premium: ₹425,000', read: false, created_at: '2024-05-15T16:00:00Z' },
+  { id: 'notif-003', type: 'review', message: 'New case assigned: MegaCorp Holdings', read: true, created_at: '2024-05-25T10:00:00Z' },
+  { id: 'notif-004', type: 'rejection', message: 'Case #case-7001 rejected', read: true, created_at: '2024-05-08T14:00:00Z' },
 ];
 
-// Utility to simulate network delay
+// Mock audit logs
+let mockAuditLogsStore = [
+  { id: 'log-001', action: 'case_created', user: 'Sarah Agent', user_id: 'agent-001', case_id: 'case-1001', details: 'Created new case for TechCorp Industries', timestamp: '2024-06-01T10:30:00Z' },
+  { id: 'log-002', action: 'file_uploaded', user: 'Sarah Agent', user_id: 'agent-001', case_id: 'case-2001', details: 'Uploaded employees_data.xlsx (150 records)', timestamp: '2024-05-29T09:15:00Z' },
+  { id: 'log-003', action: 'mapping_applied', user: 'Mike Agent', user_id: 'agent-002', case_id: 'case-3001', details: 'Applied column mapping', timestamp: '2024-05-26T16:45:00Z' },
+  { id: 'log-004', action: 'submitted_for_review', user: 'Mike Agent', user_id: 'agent-002', case_id: 'case-4001', details: 'Submitted to underwriter', timestamp: '2024-05-22T14:30:00Z' },
+  { id: 'log-005', action: 'review_started', user: 'John Underwriter', user_id: 'uw-001', case_id: 'case-5001', details: 'Started review process', timestamp: '2024-05-21T11:20:00Z' },
+  { id: 'log-006', action: 'case_approved', user: 'John Underwriter', user_id: 'uw-001', case_id: 'case-6001', details: 'Approved with premium: ₹425,000', timestamp: '2024-05-15T16:00:00Z' },
+  { id: 'log-007', action: 'case_rejected', user: 'John Underwriter', user_id: 'uw-001', case_id: 'case-7001', details: 'Rejected - High risk profile', timestamp: '2024-05-08T14:00:00Z' },
+  { id: 'log-008', action: 'user_created', user: 'Admin User', user_id: 'admin-001', details: 'Created new agent: Emma Wilson', timestamp: '2024-04-01T10:00:00Z' },
+  { id: 'log-009', action: 'user_created', user: 'Admin User', user_id: 'admin-001', details: 'Created new agent: Raj Patel', timestamp: '2024-04-10T10:00:00Z' },
+];
+
+// Utility
 const delay = (ms = 300) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ============ Mock API Implementations ============
+// Add to audit log
+const addAuditLog = (action, userId, userName, caseId, details) => {
+  mockAuditLogsStore.unshift({
+    id: `log-${Date.now()}`,
+    action,
+    user: userName,
+    user_id: userId,
+    case_id: caseId,
+    details,
+    timestamp: new Date().toISOString(),
+  });
+};
 
+// ============ Mock API Implementations ============
 export const mockApi = {
-  // Auth
+  // Auth - with in-memory sessions
   auth: {
     me: async () => {
       await delay();
-      return { id: '1', email: 'admin@goisure.com', name: 'Admin User', role: 'admin' };
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      if (!currentUserId) return null;
+      return mockUsersStore.find(u => u.id === currentUserId) || null;
     },
     login: async (email, password) => {
       await delay();
-      if (email && password) {
-        const user = mockUsers.find(u => u.email === email) || mockUsers[0];
-        return { ...user, access_token: 'mock-jwt-token-12345' };
+      const user = mockUsersStore.find(u => u.email === email && u.password === password);
+      if (!user) {
+        throw new Error('Invalid credentials');
       }
-      throw new Error('Invalid credentials');
+      // Store session
+      sessionStorage.setItem('mock_user_id', user.id);
+      sessionStorage.setItem('mock_user_role', user.role);
+      return { ...user, access_token: `mock-token-${user.id}` };
     },
     register: async (data) => {
       await delay();
+      // Check if user already exists
+      if (mockUsersStore.find(u => u.email === data.email)) {
+        throw new Error('Email already registered');
+      }
+      // Create new user - new users default to 'agent' role
       const newUser = {
-        id: String(mockUsers.length + 1),
+        id: `user-${Date.now()}`,
         email: data.email,
         name: data.name,
         role: data.role || 'agent',
+        password: data.password,
         created_at: new Date().toISOString(),
+        is_active: true,
       };
-      return { ...newUser, access_token: 'mock-jwt-token-12345' };
+      mockUsersStore.push(newUser);
+      sessionStorage.setItem('mock_user_id', newUser.id);
+      sessionStorage.setItem('mock_user_role', newUser.role);
+      addAuditLog('user_created', newUser.id, newUser.name, null, `Created new ${newUser.role}: ${newUser.name}`);
+      return { ...newUser, access_token: `mock-token-${newUser.id}` };
     },
     logout: async () => {
       await delay();
+      sessionStorage.removeItem('mock_user_id');
+      sessionStorage.removeItem('mock_user_role');
       return { message: 'Logged out successfully' };
+    },
+    // Get current session user
+    getCurrentUser: () => {
+      const userId = sessionStorage.getItem('mock_user_id');
+      const role = sessionStorage.getItem('mock_user_role');
+      return { id: userId, role };
     },
   },
 
-  // Cases
+  // Cases - with in-memory storage
   cases: {
     getAll: async (params = {}) => {
       await delay();
-      let cases = generateMockCases();
+      let cases = [...mockCasesStore];
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentRole = sessionStorage.getItem('mock_user_role');
+      
+      // Filter by user role
+      if (currentRole === 'agent') {
+        // Agents see only their cases
+        cases = cases.filter(c => c.created_by === currentUserId);
+      } else if (currentRole === 'underwriter') {
+        // Underwriters see pending/under_review cases
+        if (!params.status) {
+          cases = cases.filter(c => ['pending_review', 'under_review'].includes(c.status));
+        }
+      }
+      // Filter by status if provided
       if (params.status) {
         cases = cases.filter(c => c.status === params.status);
       }
@@ -223,8 +361,8 @@ export const mockApi = {
     },
     getById: async (caseId) => {
       await delay();
-      const cases = generateMockCases();
-      const caseData = cases.find(c => c.id === caseId) || cases[0];
+      const caseData = mockCasesStore.find(c => c.id === caseId);
+      if (!caseData) throw new Error('Case not found');
       return {
         ...caseData,
         employees: generateEmployeeData(caseData.record_count || 20),
@@ -232,25 +370,59 @@ export const mockApi = {
     },
     create: async (data) => {
       await delay();
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
       const newCase = {
-        id: `case-${String(Date.now()).slice(-3)}`,
-        ...data,
+        id: `case-${Date.now()}`,
+        client_name: data.client_name,
+        policy_type: data.policy_type || 'GMC',
+        business_type: data.business_type || 'fresh',
         status: 'draft',
+        created_by: currentUserId,
+        created_by_name: currentUser?.name || 'Unknown',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        notes: data.notes || '',
       };
+      mockCasesStore.push(newCase);
+      addAuditLog('case_created', currentUserId, currentUser?.name, newCase.id, `Created case: ${newCase.client_name}`);
       return newCase;
     },
     update: async (caseId, data) => {
       await delay();
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index === -1) throw new Error('Case not found');
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      mockCasesStore[index] = { ...mockCasesStore[index], ...data, updated_at: new Date().toISOString() };
+      addAuditLog('case_updated', currentUserId, currentUser?.name, caseId, `Updated case details`);
       return { message: 'Case updated', case_id: caseId };
     },
     delete: async (caseId) => {
       await delay();
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index === -1) throw new Error('Case not found');
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      mockCasesStore.splice(index, 1);
+      addAuditLog('case_deleted', currentUserId, currentUser?.name, caseId, `Deleted case`);
       return { message: 'Case deleted' };
     },
     upload: async (caseId, file) => {
       await delay(500);
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index !== -1) {
+        mockCasesStore[index] = {
+          ...mockCasesStore[index],
+          status: 'uploaded',
+          filename: file?.name || 'employees.xlsx',
+          record_count: 50,
+          updated_at: new Date().toISOString(),
+        };
+      }
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      addAuditLog('file_uploaded', currentUserId, currentUser?.name, caseId, `Uploaded ${file?.name || 'employees.xlsx'}`);
       return {
         case_id: caseId,
         filename: file?.name || 'employees.xlsx',
@@ -261,51 +433,130 @@ export const mockApi = {
     },
     applyMapping: async (caseId, mapping) => {
       await delay();
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index !== -1) {
+        mockCasesStore[index] = {
+          ...mockCasesStore[index],
+          status: 'mapping_applied',
+          mapping,
+          updated_at: new Date().toISOString(),
+        };
+      }
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      addAuditLog('mapping_applied', currentUserId, currentUser?.name, caseId, 'Applied column mapping');
       return { case_id: caseId, mapped_count: 50, status: 'mapping_applied' };
-    },
-    correctData: async (caseId, corrections) => {
-      await delay();
-      return { case_id: caseId, corrected: corrections.length };
     },
     submit: async (caseId) => {
       await delay();
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index !== -1) {
+        mockCasesStore[index] = {
+          ...mockCasesStore[index],
+          status: 'pending_review',
+          updated_at: new Date().toISOString(),
+        };
+      }
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      addAuditLog('submitted_for_review', currentUserId, currentUser?.name, caseId, 'Submitted to underwriter');
       return { case_id: caseId, status: 'pending_review' };
     },
     startReview: async (caseId) => {
       await delay();
-      return { case_id: caseId, status: 'under_review', assigned_to: '2' };
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index !== -1) {
+        mockCasesStore[index] = {
+          ...mockCasesStore[index],
+          status: 'under_review',
+          assigned_to: currentUserId,
+          assigned_to_name: currentUser?.name,
+          updated_at: new Date().toISOString(),
+        };
+      }
+      addAuditLog('review_started', currentUserId, currentUser?.name, caseId, 'Started review process');
+      return { case_id: caseId, status: 'under_review', assigned_to: currentUserId };
     },
     makeDecision: async (caseId, decision) => {
       await delay();
-      return { case_id: caseId, status: decision.decision, notes: decision.notes };
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index !== -1) {
+        const status = decision.decision === 'approve' ? 'approved' : 'rejected';
+        mockCasesStore[index] = {
+          ...mockCasesStore[index],
+          status,
+          decision_notes: decision.notes,
+          updated_at: new Date().toISOString(),
+        };
+        if (decision.decision === 'approve') {
+          mockCasesStore[index].premium = decision.premium || 500000;
+          mockCasesStore[index].approved_by = currentUserId;
+          mockCasesStore[index].approved_by_name = currentUser?.name;
+        } else {
+          mockCasesStore[index].rejection_reason = decision.notes;
+          mockCasesStore[index].rejected_by = currentUserId;
+          mockCasesStore[index].rejected_by_name = currentUser?.name;
+        }
+      }
+      addAuditLog(
+        decision.decision === 'approve' ? 'case_approved' : 'case_rejected',
+        currentUserId,
+        currentUser?.name,
+        caseId,
+        decision.decision === 'approve' ? `Approved with premium: ₹${decision.premium || 500000}` : `Rejected - ${decision.notes}`
+      );
+      return { case_id: caseId, status: decision.decision === 'approve' ? 'approved' : 'rejected', notes: decision.notes };
     },
   },
 
-  // Dashboard
+  // Dashboard - with analytics
   dashboard: {
     getStats: async () => {
       await delay();
+      const allCases = mockCasesStore;
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentRole = sessionStorage.getItem('mock_user_role');
+      
+      // Calculate stats based on role
+      let totalCases = allCases.length;
+      let pendingReview = allCases.filter(c => c.status === 'pending_review').length;
+      let underReview = allCases.filter(c => c.status === 'under_review').length;
+      let approved = allCases.filter(c => c.status === 'approved').length;
+      let rejected = allCases.filter(c => c.status === 'rejected').length;
+      let draft = allCases.filter(c => c.status === 'draft').length;
+      let uploaded = allCases.filter(c => c.status === 'uploaded').length;
+      let mappingApplied = allCases.filter(c => c.status === 'mapping_applied').length;
+      
+      const totalPremium = allCases
+        .filter(c => c.status === 'approved')
+        .reduce((sum, c) => sum + (c.premium || 0), 0);
+        
       return {
-        total_cases: 8,
-        pending_review: 2,
-        approved: 1,
-        rejected: 1,
-        draft: 2,
-        total_premium: 425000,
-        this_month_cases: 5,
-        this_month_premium: 125000,
+        total_cases: totalCases,
+        pending_review: pendingReview + underReview,
+        approved,
+        rejected,
+        draft,
+        uploaded,
+        mapping_applied: mappingApplied,
+        total_premium: totalPremium,
+        this_month_cases: allCases.filter(c => {
+          const date = new Date(c.created_at);
+          const now = new Date();
+          return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+        }).length,
+        this_month_premium: allCases
+          .filter(c => c.status === 'approved' && new Date(c.updated_at).getMonth() === new Date().getMonth())
+          .reduce((sum, c) => sum + (c.premium || 0), 0),
       };
     },
     getRecentActivity: async () => {
       await delay();
-      return {
-        activities: [
-          { id: '1', action: 'Case created', case: 'TechCorp Industries', user: 'Sarah Agent', time: '2 hours ago' },
-          { id: '2', action: 'File uploaded', case: 'Global Services Ltd', user: 'Sarah Agent', time: '3 days ago' },
-          { id: '3', action: 'Submitted for review', case: 'MegaCorp Holdings', user: 'Sarah Agent', time: '5 days ago' },
-          { id: '4', action: 'Case approved', case: 'EduTech Solutions', user: 'John Underwriter', time: '1 week ago' },
-        ],
-      };
+      return { activities: mockAuditLogsStore.slice(0, 10) };
     },
   },
 
@@ -313,32 +564,70 @@ export const mockApi = {
   underwriter: {
     getQueue: async (params = {}) => {
       await delay();
-      const cases = generateMockCases().filter(c => ['pending_review', 'under_review'].includes(c.status));
+      const cases = mockCasesStore.filter(c => ['pending_review', 'under_review'].includes(c.status));
       return { cases, total: cases.length };
     },
   },
 
-  // Admin
+  // Admin - user management
   admin: {
     getStats: async () => {
       await delay();
       return {
-        total_users: 4,
-        active_users: 3,
-        total_cases: 8,
-        total_premium: 425000,
-        agents: 2,
-        underwriters: 1,
-        admins: 1,
+        total_users: mockUsersStore.length,
+        active_users: mockUsersStore.filter(u => u.is_active).length,
+        total_cases: mockCasesStore.length,
+        total_premium: mockCasesStore.filter(c => c.status === 'approved').reduce((sum, c) => sum + (c.premium || 0), 0),
+        agents: mockUsersStore.filter(u => u.role === 'agent').length,
+        underwriters: mockUsersStore.filter(u => u.role === 'underwriter').length,
+        admins: mockUsersStore.filter(u => ['admin', 'superadmin'].includes(u.role)).length,
       };
     },
     getUsers: async (params = {}) => {
       await delay();
-      return { users: mockUsers, total: mockUsers.length };
+      let users = [...mockUsersStore];
+      if (params.role) {
+        users = users.filter(u => u.role === params.role);
+      }
+      if (params.is_active !== undefined) {
+        users = users.filter(u => u.is_active === (params.is_active === 'true'));
+      }
+      // Remove passwords before returning
+      users = users.map(({ password, ...rest }) => rest);
+      return { users, total: users.length };
+    },
+    createUser: async (data) => {
+      await delay();
+      const newUser = {
+        id: `user-${Date.now()}`,
+        email: data.email,
+        name: data.name,
+        role: data.role || 'agent',
+        password: data.password || 'agent123',
+        created_at: new Date().toISOString(),
+        is_active: true,
+      };
+      mockUsersStore.push(newUser);
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      addAuditLog('user_created', currentUserId, currentUser?.name, null, `Created new ${data.role}: ${data.name}`);
+      return { ...newUser };
     },
     updateUser: async (userId, data) => {
       await delay();
+      const index = mockUsersStore.findIndex(u => u.id === userId);
+      if (index !== -1) {
+        mockUsersStore[index] = { ...mockUsersStore[index], ...data };
+      }
       return { message: 'User updated', user_id: userId };
+    },
+    deleteUser: async (userId) => {
+      await delay();
+      const index = mockUsersStore.findIndex(u => u.id === userId);
+      if (index !== -1) {
+        mockUsersStore.splice(index, 1);
+      }
+      return { message: 'User deleted' };
     },
   },
 
@@ -354,14 +643,28 @@ export const mockApi = {
     },
     create: async (data) => {
       await delay();
-      return { id: `tpl-${Date.now()}`, ...data, created_at: new Date().toISOString() };
+      const newTemplate = {
+        id: `tpl-${Date.now()}`,
+        ...data,
+        created_at: new Date().toISOString(),
+      };
+      mockTemplates.push(newTemplate);
+      return newTemplate;
     },
     update: async (templateId, data) => {
       await delay();
+      const index = mockTemplates.findIndex(t => t.id === templateId);
+      if (index !== -1) {
+        mockTemplates[index] = { ...mockTemplates[index], ...data };
+      }
       return { message: 'Template updated', template_id: templateId };
     },
     delete: async (templateId) => {
       await delay();
+      const index = mockTemplates.findIndex(t => t.id === templateId);
+      if (index !== -1) {
+        mockTemplates.splice(index, 1);
+      }
       return { message: 'Template deleted' };
     },
   },
@@ -370,7 +673,7 @@ export const mockApi = {
   notifications: {
     getAll: async (unreadOnly = false) => {
       await delay();
-      let notifs = mockNotifications;
+      let notifs = mockNotificationsStore;
       if (unreadOnly) {
         notifs = notifs.filter(n => !n.read);
       }
@@ -378,6 +681,10 @@ export const mockApi = {
     },
     markRead: async (ids) => {
       await delay();
+      ids.forEach(id => {
+        const notif = mockNotificationsStore.find(n => n.id === id);
+        if (notif) notif.read = true;
+      });
       return { message: 'Notifications marked as read' };
     },
   },
@@ -386,7 +693,14 @@ export const mockApi = {
   audit: {
     getLogs: async (params = {}) => {
       await delay();
-      return { logs: generateAuditLogs(), total: 7 };
+      let logs = [...mockAuditLogsStore];
+      if (params.user_id) {
+        logs = logs.filter(l => l.user_id === params.user_id);
+      }
+      if (params.action) {
+        logs = logs.filter(l => l.action === params.action);
+      }
+      return { logs, total: logs.length };
     },
   },
 
@@ -412,10 +726,10 @@ export const mockApi = {
   // Health check
   health: async () => {
     await delay(100);
-    return { status: 'healthy', service: 'gmc-platform-mock', db: 'mock' };
+    return { status: 'healthy', service: 'gmc-platform-demo', db: 'in-memory' };
   },
 };
 
-// Export check for mock mode
+// Export
 export const isMockMode = () => MOCK_MODE;
 export default mockApi;

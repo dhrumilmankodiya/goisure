@@ -90,10 +90,10 @@ function AppRoutes() {
       <Route path="/underwriter/cases/:caseId" element={<ProtectedRoute allowedRoles={['underwriter', 'admin']}><UnderwriterReviewPage /></ProtectedRoute>} />
 
       {/* Admin Routes */}
-      <Route path="/admin" element={<ProtectedRoute allowedRoles={['admin']}><AdminDashboardPage /></ProtectedRoute>} />
-      <Route path="/admin/users" element={<ProtectedRoute allowedRoles={['admin']}><UserManagementPage /></ProtectedRoute>} />
-      <Route path="/admin/templates" element={<ProtectedRoute allowedRoles={['admin']}><TemplateManagerPage /></ProtectedRoute>} />
-      <Route path="/admin/audit" element={<ProtectedRoute allowedRoles={['admin']}><AuditTrailPage /></ProtectedRoute>} />
+      <Route path="/admin" element={<ProtectedRoute allowedRoles={['admin', 'superadmin']}><AdminDashboardPage /></ProtectedRoute>} />
+      <Route path="/admin/users" element={<ProtectedRoute allowedRoles={['admin', 'superadmin']}><UserManagementPage /></ProtectedRoute>} />
+      <Route path="/admin/templates" element={<ProtectedRoute allowedRoles={['admin', 'superadmin']}><TemplateManagerPage /></ProtectedRoute>} />
+      <Route path="/admin/audit" element={<ProtectedRoute allowedRoles={['admin', 'superadmin']}><AuditTrailPage /></ProtectedRoute>} />
 
       {/* Calculator Route */}
       <Route path="/calculator" element={<ProtectedRoute><PremiumCalculatorPage /></ProtectedRoute>} />

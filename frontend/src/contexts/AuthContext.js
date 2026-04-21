@@ -133,6 +133,16 @@ export function AuthProvider({ children }) {
     }
   };
 
+  // Role-based checks
+  const isSuperAdmin = user?.role === 'superadmin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const isUnderwriter = user?.role === 'underwriter';
+  const isAgent = user?.role === 'agent';
+  const canCreateCase = isAgent || isAdmin;
+  const canReview = isUnderwriter || isAdmin;
+  const canManageUsers = isAdmin;
+  const canViewAnalytics = isAdmin || isSuperAdmin;
+
   return (
     <AuthContext.Provider value={{
       user,
@@ -144,9 +154,14 @@ export function AuthProvider({ children }) {
       resetPassword,
       checkAuth,
       isAuthenticated: user !== null && user !== false,
-      isAgent: user?.role === 'agent',
-      isUnderwriter: user?.role === 'underwriter',
-      isAdmin: user?.role === 'admin'
+      isSuperAdmin,
+      isAdmin,
+      isUnderwriter,
+      isAgent,
+      canCreateCase,
+      canReview,
+      canManageUsers,
+      canViewAnalytics,
     }}>
       {children}
     </AuthContext.Provider>
