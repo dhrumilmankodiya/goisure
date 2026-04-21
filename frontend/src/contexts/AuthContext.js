@@ -1,11 +1,11 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { mockApi, isMockMode } from '../lib/mockApi';
 
 const AuthContext = createContext(null);
 
-const API_URL = process.env.REACT_APP_BACKEND_URL || ''; // Use relative URLs if not set
+const API_URL = process.env.REACT_APP_BACKEND_URL || '';
 
-// Configure axios defaults - use cookies for auth
 axios.defaults.withCredentials = true;
 
 function formatApiErrorDetail(detail) {
@@ -18,12 +18,18 @@ function formatApiErrorDetail(detail) {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null); // null = checking, false = not authenticated
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const checkAuth = useCallback(async () => {
     try {
-      const { data } = await axios.get(`${API_URL}/api/auth/me`, { withCredentials: true });
+      let data;
+      if (isMockMode()) {
+        data = await mockApi.auth.me();
+      } else {
+        const response = await axios.get(`${API_URL}/api/auth/me`, { withCredentials: true });
+        data = response.data;
+      }
       setUser(data);
     } catch {
       setUser(false);
@@ -38,41 +44,55 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     try {
-      const { data } = await axios.post(
-        `${API_URL}/api/auth/login`,
-        { email, password },
-        { withCredentials: true }
-      );
+      let data;
+      if (isMockMode()) {
+        data = await mockApi.auth.login(email, password);
+      } else {
+        const response = await axios.post(
+          `${API_URL}/api/auth/login`,
+          { email, password },
+          { withCredentials: true }
+        );
+        data = response.data;
+      }
       setUser(data);
       return { success: true, data };
     } catch (e) {
-      return { 
-        success: false, 
-        error: formatApiErrorDetail(e.response?.data?.detail) || e.message 
+      return {
+        success: false,
+        error: formatApiErrorDetail(e.response?.data?.detail) || e.message
       };
     }
   };
 
   const register = async (email, password, name, role = 'agent') => {
     try {
-      const { data } = await axios.post(
-        `${API_URL}/api/auth/register`,
-        { email, password, name, role },
-        { withCredentials: true }
-      );
+      let data;
+      if (isMockMode()) {
+        data = await mockApi.auth.register({ email, password, name, role });
+      } else {
+        const response = await axios.post(
+          `${API_URL}/api/auth/register`,
+          { email, password, name, role },
+          { withCredentials: true }
+        );
+        data = response.data;
+      }
       setUser(data);
       return { success: true, data };
     } catch (e) {
-      return { 
-        success: false, 
-        error: formatApiErrorDetail(e.response?.data?.detail) || e.message 
+      return {
+        success: false,
+        error: formatApiErrorDetail(e.response?.data?.detail) || e.message
       };
     }
   };
 
   const logout = async () => {
     try {
-      await axios.post(`${API_URL}/api/auth/logout`, {}, { withCredentials: true });
+      if (!isMockMode()) {
+        await axios.post(`${API_URL}/api/auth/logout`, {}, { withCredentials: true });
+      }
     } catch {
       // Ignore errors
     } finally {
@@ -82,39 +102,45 @@ export function AuthProvider({ children }) {
 
   const forgotPassword = async (email) => {
     try {
+      if (isMockMode()) {
+        return { success: true, data: { message: 'Reset link sent to email' } };
+      }
       const { data } = await axios.post(`${API_URL}/api/auth/forgot-password`, { email });
       return { success: true, data };
     } catch (e) {
-      return { 
-        success: false, 
-        error: formatApiErrorDetail(e.response?.data?.detail) || e.message 
+      return {
+        success: false,
+        error: formatApiErrorDetail(e.response?.data?.detail) || e.message
       };
     }
   };
 
   const resetPassword = async (token, newPassword) => {
     try {
-      const { data } = await axios.post(`${API_URL}/api/auth/reset-password`, { 
-        token, 
-        new_password: newPassword 
+      if (isMockMode()) {
+        return { success: true, data: { message: 'Password reset successfully' } };
+      }
+      const { data } = await axios.post(`${API_URL}/api/auth/reset-password`, {
+        token,
+        new_password: newPassword
       });
       return { success: true, data };
     } catch (e) {
-      return { 
-        success: false, 
-        error: formatApiErrorDetail(e.response?.data?.detail) || e.message 
+      return {
+        success: false,
+        error: formatApiErrorDetail(e.response?.data?.detail) || e.message
       };
     }
   };
 
   return (
-    <AuthContext.Provider value={{ 
-      user, 
-      loading, 
-      login, 
-      register, 
-      logout, 
-      forgotPassword, 
+    <AuthContext.Provider value={{
+      user,
+      loading,
+      login,
+      register,
+      logout,
+      forgotPassword,
       resetPassword,
       checkAuth,
       isAuthenticated: user !== null && user !== false,
