@@ -4,9 +4,8 @@
   "framework": "create-react-app",
   "python": "3.11",
   "routes": [
-    { "src": "/api/(?<path>.*)", "dest": "/api/index.py" }
-  ],
-  "env": {
-    "PYTHONPATH": "."
-  }
+    { "src": "/api/(?<path>.*)", "dest": "/api/index.py" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/frontend/build/index.html" }
+  ]
 }
