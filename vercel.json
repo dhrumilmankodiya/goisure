@@ -2,10 +2,7 @@
   "buildCommand": "cd frontend && npm install ajv@8 --legacy-peer-deps && npm install --legacy-peer-deps && DISABLE_ESLINT_PLUGIN=true npm run build",
   "outputDirectory": "frontend/build",
   "framework": "create-react-app",
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.py" },
-    { "source": "/(.*)", "destination": "/frontend/build/index.html" }
-  ],
+  "python": "3.11",
   "env": {
     "PYTHONPATH": "api"
   }
