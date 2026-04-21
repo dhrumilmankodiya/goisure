@@ -1,7 +1,8 @@
 // Mock data for the GMC Platform
 // Returns realistic dummy data for all screens
 
-const MOCK_MODE = true; // Set to false when real backend is available
+// Mock mode: use REACT_APP_MOCK_MODE env var, defaults to true in production
+const MOCK_MODE = process.env.REACT_APP_MOCK_MODE !== 'false';
 
 // Generate realistic dummy users
 const mockUsers = [
