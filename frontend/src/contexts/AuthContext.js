@@ -4,7 +4,7 @@ import { mockApi, isMockMode } from '../lib/mockApi';
 
 const AuthContext = createContext(null);
 
-const API_URL = process.env.REACT_APP_BACKEND_URL || '';
+const API_URL = ''; // Always empty for mock mode
 
 axios.defaults.withCredentials = true;
 

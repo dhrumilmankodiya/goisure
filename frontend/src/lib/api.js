@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { mockApi, isMockMode } from './mockApi';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL || '';
+const API_URL = ''; // Always empty for mock mode
 
 const api = axios.create({
   baseURL: `${API_URL}/api`,
