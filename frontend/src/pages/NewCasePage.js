@@ -576,136 +576,93 @@ export default function NewCasePage() {
                   <code className="px-2 py-1 bg-zinc-100 rounded text-zinc-900 font-mono text-xs">{caseId}</code>
                 </div>
 
-                {isRenewal ? (
-                  /* === Two upload zones for renewals === */
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-100 rounded-lg">
-                      <AlertCircle className="w-4 h-4 text-blue-500 flex-shrink-0" />
-                      <p className="text-sm text-blue-700">
-                        Upload both Claims and Enrollment files to proceed to pricing
-                      </p>
-                    </div>
+{/* === Always show both Claims and Enrollment uploads === */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-100 rounded-lg">
+                    <AlertCircle className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                    <p className="text-sm text-blue-700">
+                      Upload both Claims and Enrollment files to proceed to pricing
+                    </p>
+                  </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {/* Claims File */}
-                      <div className="space-y-2">
-                        <Label className="text-sm font-medium">Claims File *</Label>
-                        <UploadZone
-                          id="claims-file-input"
-                          label="Claims File"
-                          hint="Historical claims data (.xlsx, .xls, .csv)"
-                          file={claimsFile || claimsResult}
-                          onFileChange={(f) => validateFile(f) && setClaimsFile(f)}
-                          onRemove={() => setClaimsFile(null)}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* Claims File */}
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Claims File *</Label>
+                      <UploadZone
+                        id="claims-file-input"
+                        label="Claims File"
+                        hint="Historical claims data (.xlsx, .xls, .csv)"
+                        file={claimsFile || claimsResult}
+                        onFileChange={(f) => validateFile(f) && setClaimsFile(f)}
+                        onRemove={() => setClaimsFile(null)}
+                        disabled={uploadingClaims}
+                        status={claimsResult ? 'uploaded' : null}
+                      />
+                      {claimsFile && !claimsResult && (
+                        <Button
+                          onClick={handleClaimsUpload}
                           disabled={uploadingClaims}
-                          status={claimsResult ? 'uploaded' : null}
-                        />
-                        {claimsFile && !claimsResult && (
-                          <Button
-                            onClick={handleClaimsUpload}
-                            disabled={uploadingClaims}
-                            className="w-full bg-[#0055FF] hover:bg-[#0040CC] text-sm"
-                            data-testid="upload-claims-button"
-                          >
-                            {uploadingClaims ? (
-                              <><div className="spinner w-4 h-4 border-white border-t-transparent mr-2" />Uploading...</>
-                            ) : 'Upload Claims'}
-                          </Button>
-                        )}
-                        {claimsResult && (
-                          <p className="text-xs text-emerald-600">
-                            {claimsResult.claims_record_count} rows · {claimsResult.status}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Enrollment File */}
-                      <div className="space-y-2">
-                        <Label className="text-sm font-medium">Enrollment File *</Label>
-                        <UploadZone
-                          id="enrollment-file-input"
-                          label="Enrollment File"
-                          hint="Member list with demographics (.xlsx, .xls, .csv)"
-                          file={enrollmentFile || enrollmentResult}
-                          onFileChange={(f) => validateFile(f) && setEnrollmentFile(f)}
-                          onRemove={() => setEnrollmentFile(null)}
-                          disabled={uploadingEnrollment}
-                          status={enrollmentResult ? 'uploaded' : null}
-                        />
-                        {enrollmentFile && !enrollmentResult && (
-                          <Button
-                            onClick={handleEnrollmentUpload}
-                            disabled={uploadingEnrollment}
-                            className="w-full bg-[#0055FF] hover:bg-[#0040CC] text-sm"
-                            data-testid="upload-enrollment-button"
-                          >
-                            {uploadingEnrollment ? (
-                              <><div className="spinner w-4 h-4 border-white border-t-transparent mr-2" />Uploading...</>
-                            ) : 'Upload Enrollments'}
-                          </Button>
-                        )}
-                        {enrollmentResult && (
-                          <p className="text-xs text-emerald-600">
-                            {enrollmentResult.row_count} rows · {enrollmentResult.status}
-                          </p>
-                        )}
-                      </div>
+                          className="w-full bg-[#0055FF] hover:bg-[#0040CC] text-sm"
+                          data-testid="upload-claims-button"
+                        >
+                          {uploadingClaims ? (
+                            <><div className="spinner w-4 h-4 border-white border-t-transparent mr-2" />Uploading...</>
+                          ) : 'Upload Claims'}
+                        </Button>
+                      )}
+                      {claimsResult && (
+                        <p className="text-xs text-emerald-600">
+                          {claimsResult.claims_record_count} rows · {claimsResult.status}
+                        </p>
+                      )}
                     </div>
 
-                    {/* Upload Checklist */}
-                    <div className="border border-zinc-200 rounded-lg divide-y divide-zinc-100">
-                      <div className={`flex items-center gap-3 px-4 py-2.5 ${claimsResult ? 'text-emerald-700' : 'text-zinc-400'}`}>
-                        {claimsResult ? <CheckCircle className="w-4 h-4 text-emerald-500" /> : <div className="w-4 h-4 rounded-full border-2 border-current" />}
-                        <span className="text-sm font-medium">Claims file</span>
-                      </div>
-                      <div className={`flex items-center gap-3 px-4 py-2.5 ${enrollmentResult ? 'text-emerald-700' : 'text-zinc-400'}`}>
-                        {enrollmentResult ? <CheckCircle className="w-4 h-4 text-emerald-500" /> : <div className="w-4 h-4 rounded-full border-2 border-current" />}
-                        <span className="text-sm font-medium">Enrollment file</span>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  /* === Single upload zone for fresh cases === */
-                  <div className="space-y-4">
-                    <UploadZone
-                      id="enrollment-file-input-fresh"
-                      label="Enrollment Data File"
-                      hint="Member list with demographics (.xlsx, .xls, .csv)"
-                      file={enrollmentFile || enrollmentResult}
-                      onFileChange={(f) => validateFile(f) && setEnrollmentFile(f)}
-                      onRemove={() => setEnrollmentFile(null)}
-                      disabled={uploadingEnrollment}
-                      status={enrollmentResult ? 'uploaded' : null}
-                    />
-                    {enrollmentFile && !enrollmentResult && (
-                      <Button
-                        onClick={handleEnrollmentUpload}
+                    {/* Enrollment File */}
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Enrollment File *</Label>
+                      <UploadZone
+                        id="enrollment-file-input"
+                        label="Enrollment File"
+                        hint="Member list with demographics (.xlsx, .xls, .csv)"
+                        file={enrollmentFile || enrollmentResult}
+                        onFileChange={(f) => validateFile(f) && setEnrollmentFile(f)}
+                        onRemove={() => setEnrollmentFile(null)}
                         disabled={uploadingEnrollment}
-                        className="w-full bg-[#0055FF] hover:bg-[#0040CC]"
-                        data-testid="upload-enrollment-button"
-                      >
-                        {uploadingEnrollment ? (
-                          <><div className="spinner w-5 h-5 border-white border-t-transparent mr-2" />Processing...</>
-                        ) : (
-                          <><Upload className="w-4 h-4 mr-2" />Upload & Process</>
-                        )}
-                      </Button>
-                    )}
-                    {enrollmentResult && (
-                      <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-lg">
-                        <div className="flex items-start gap-3">
-                          <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
-                          <div>
-                            <p className="font-medium text-emerald-800">File processed successfully</p>
-                            <p className="text-sm text-emerald-600 mt-1">
-                              {enrollmentResult.row_count} rows, {enrollmentResult.columns?.length || 0} columns
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                        status={enrollmentResult ? 'uploaded' : null}
+                      />
+                      {enrollmentFile && !enrollmentResult && (
+                        <Button
+                          onClick={handleEnrollmentUpload}
+                          disabled={uploadingEnrollment}
+                          className="w-full bg-[#0055FF] hover:bg-[#0040CC] text-sm"
+                          data-testid="upload-enrollment-button"
+                        >
+                          {uploadingEnrollment ? (
+                            <><div className="spinner w-4 h-4 border-white border-t-transparent mr-2" />Uploading...</>
+                          ) : 'Upload Enrollments'}
+                        </Button>
+                      )}
+                      {enrollmentResult && (
+                        <p className="text-xs text-emerald-600">
+                          {enrollmentResult.row_count} rows · {enrollmentResult.status}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                )}
+
+                  {/* Upload Checklist */}
+                  <div className="border border-zinc-200 rounded-lg divide-y divide-zinc-100">
+                    <div className={`flex items-center gap-3 px-4 py-2.5 ${claimsResult ? 'text-emerald-700' : 'text-zinc-400'}`}>
+                      {claimsResult ? <CheckCircle className="w-4 h-4 text-emerald-500" /> : <div className="w-4 h-4 rounded-full border-2 border-current" />}
+                      <span className="text-sm font-medium">Claims file</span>
+                    </div>
+                    <div className={`flex items-center gap-3 px-4 py-2.5 ${enrollmentResult ? 'text-emerald-700' : 'text-zinc-400'}`}>
+                      {enrollmentResult ? <CheckCircle className="w-4 h-4 text-emerald-500" /> : <div className="w-4 h-4 rounded-full border-2 border-current" />}
+                      <span className="text-sm font-medium">Enrollment file</span>
+                    </div>
+                  </div>
+                </div>
 
                 {/* Template Download */}
                 <div className="flex items-center gap-3 p-3 bg-zinc-50 rounded-lg">
