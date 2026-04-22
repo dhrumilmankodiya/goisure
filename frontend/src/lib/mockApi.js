@@ -2,7 +2,7 @@
 // Returns realistic dummy data for all screens
 // Uses in-memory storage for new cases (no backend needed)
 
-const MOCK_MODE = true;
+const MOCK_MODE = process.env.REACT_APP_MOCK_MODE !== 'false';
 
 // ============ In-Memory Storage ============
 let mockCasesStore = [];
@@ -417,6 +417,7 @@ export const mockApi = {
           status: 'uploaded',
           filename: file?.name || 'employees.xlsx',
           record_count: 50,
+          enrollment_uploaded: true,
           updated_at: new Date().toISOString(),
         };
       }
@@ -428,6 +429,29 @@ export const mockApi = {
         filename: file?.name || 'employees.xlsx',
         columns: ['Employee ID', 'Name', 'Age', 'Gender', 'Sum Insured', 'City', 'Department'],
         record_count: 50,
+        status: 'uploaded',
+      };
+    },
+    uploadClaims: async (caseId, file) => {
+      await delay(500);
+      const index = mockCasesStore.findIndex(c => c.id === caseId);
+      if (index !== -1) {
+        mockCasesStore[index] = {
+          ...mockCasesStore[index],
+          claims_uploaded: true,
+          claims_filename: file?.name || 'claims.xlsx',
+          claims_record_count: 25,
+          updated_at: new Date().toISOString(),
+        };
+      }
+      const currentUserId = sessionStorage.getItem('mock_user_id');
+      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
+      addAuditLog('claims_file_uploaded', currentUserId, currentUser?.name, caseId, `Uploaded claims file ${file?.name || 'claims.xlsx'}`);
+      return {
+        case_id: caseId,
+        claims_filename: file?.name || 'claims.xlsx',
+        claims_columns: ['Claim ID', 'Employee ID', 'Claim Amount', 'Claim Date', 'Status'],
+        claims_row_count: 25,
         status: 'uploaded',
       };
     },

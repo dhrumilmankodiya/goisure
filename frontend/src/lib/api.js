@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { mockApi, isMockMode } from './mockApi';
 
-const API_URL = ''; // Always empty for mock mode
+const API_URL = process.env.REACT_APP_BACKEND_URL || '';
 
 const api = axios.create({
   baseURL: `${API_URL}/api`,
@@ -50,6 +50,14 @@ export const casesApi = {
     const formData = new FormData();
     formData.append('file', file);
     return api.post(`/cases/${caseId}/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  uploadClaims: async (caseId, file) => {
+    if (isMockMode()) return { data: await mockApi.cases.uploadClaims(caseId, file) };
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/cases/${caseId}/upload-claims`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },

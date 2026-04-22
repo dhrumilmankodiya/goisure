@@ -123,8 +123,24 @@ class UserLogin(BaseModel):
 class CaseCreate(BaseModel):
     client_name: str
     policy_type: str = "GMC"
+    # New fields:
+    business_type: str = "fresh"   # "fresh" | "renewal"
+    # Fresh case fields:
+    industry: Optional[str] = None
+    employee_count: Optional[int] = None
+    group_size_band: Optional[str] = None   # "micro" (<10), "small" (10-50), "medium" (51-200), "large" (201-1000), "enterprise" (1000+)
+    current_insurer: Optional[str] = None
+    coverage_level: Optional[str] = None   # "basic" | "standard" | "premium" | "topup"
+    # Renewal-only (only validated when business_type == "renewal"):
+    previous_policy_number: Optional[str] = None
+    previous_premium: Optional[float] = None
+    claims_ratio: Optional[float] = None
+    previous_insurer: Optional[str] = None
+    # Policy dates (optional but useful):
+    policy_start: Optional[str] = None
+    policy_end: Optional[str] = None
+    renewal_date: Optional[str] = None
     notes: Optional[str] = None
-    business_type: str = "fresh"
 
 class CaseUpdate(BaseModel):
     client_name: Optional[str] = None
@@ -281,6 +297,16 @@ async def create_case(data: CaseCreate, request: Request):
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # Validation for renewal cases
+    if data.business_type == "renewal":
+        if not data.previous_insurer or not data.previous_premium or not data.previous_policy_number:
+            raise HTTPException(
+                status_code=400, 
+                detail="For renewal cases, previous_insurer, previous_premium, and previous_policy_number are required"
+            )
+    
+    # Build case document with all fields
     case_doc = {
         "client_name": data.client_name,
         "policy_type": data.policy_type,
@@ -290,8 +316,39 @@ async def create_case(data: CaseCreate, request: Request):
         "created_by": user["id"],
         "created_by_name": user.get("name", ""),
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat()
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    
+    # Add optional fields if provided
+    if data.industry is not None:
+        case_doc["industry"] = data.industry
+    if data.employee_count is not None:
+        case_doc["employee_count"] = data.employee_count
+    if data.group_size_band is not None:
+        case_doc["group_size_band"] = data.group_size_band
+    if data.current_insurer is not None:
+        case_doc["current_insurer"] = data.current_insurer
+    if data.coverage_level is not None:
+        case_doc["coverage_level"] = data.coverage_level
+    if data.previous_policy_number is not None:
+        case_doc["previous_policy_number"] = data.previous_policy_number
+    if data.previous_premium is not None:
+        case_doc["previous_premium"] = data.previous_premium
+    if data.claims_ratio is not None:
+        case_doc["claims_ratio"] = data.claims_ratio
+    if data.previous_insurer is not None:
+        case_doc["previous_insurer"] = data.previous_insurer
+    if data.policy_start is not None:
+        case_doc["policy_start"] = data.policy_start
+    if data.policy_end is not None:
+        case_doc["policy_end"] = data.policy_end
+    if data.renewal_date is not None:
+        case_doc["renewal_date"] = data.renewal_date
+    
+    # Initialize upload tracking flags
+    case_doc["claims_uploaded"] = False
+    case_doc["enrollment_uploaded"] = False
+    
     result = await db.cases.insert_one(case_doc)
     case_id = str(result.inserted_id)
     return {"case_id": case_id, "id": case_id, **case_doc}
@@ -368,10 +425,10 @@ async def upload_file(case_id: str, request: Request, file: UploadFile = File(..
     }
     await db.uploads.insert_one(upload_doc)
     
-    # Update case status
+    # Update case status and enrollment_uploaded flag
     await db.cases.update_one(
         {"_id": ObjectId(case_id)},
-        {"$set": {"status": "uploaded", "filename": file.filename, "record_count": len(cleaned_records), "updated_at": datetime.now(timezone.utc).isoformat()}}
+        {"$set": {"status": "uploaded", "filename": file.filename, "record_count": len(cleaned_records), "enrollment_uploaded": True, "updated_at": datetime.now(timezone.utc).isoformat()}}
     )
     
     return {
@@ -379,6 +436,63 @@ async def upload_file(case_id: str, request: Request, file: UploadFile = File(..
         "filename": file.filename,
         "columns": columns,
         "record_count": len(cleaned_records),
+        "status": "uploaded"
+    }
+
+@api_router.post("/cases/{case_id}/upload-claims")
+async def upload_claims_file(case_id: str, request: Request, file: UploadFile = File(...)):
+    """Upload claims file for renewal cases - stores separately from enrollment data"""
+    user = await get_current_user(request)
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # Read file content
+    content = await file.read()
+    
+    # Parse Excel/CSV
+    try:
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(content))
+        else:
+            df = pd.read_excel(io.BytesIO(content))
+        
+        # Convert to records
+        records = df.to_dict(orient="records")
+        columns = list(df.columns)
+        
+        # Clean NaN values
+        cleaned_records = []
+        for r in records:
+            cleaned = {k: ('' if pd.isna(v) else v) for k, v in r.items()}
+            cleaned_records.append(cleaned)
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
+    
+    # Store claims upload data
+    claims_upload_doc = {
+        "case_id": case_id,
+        "filename": file.filename,
+        "columns": columns,
+        "record_count": len(cleaned_records),
+        "records": cleaned_records,
+        "uploaded_by": user["id"],
+        "uploaded_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.uploads.insert_one(claims_upload_doc)
+    
+    # Update case status and claims_uploaded flag
+    await db.cases.update_one(
+        {"_id": ObjectId(case_id)},
+        {"$set": {"claims_uploaded": True, "claims_filename": file.filename, "claims_record_count": len(cleaned_records), "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    return {
+        "case_id": case_id,
+        "claims_filename": file.filename,
+        "claims_columns": columns,
+        "claims_row_count": len(cleaned_records),
         "status": "uploaded"
     }
 
