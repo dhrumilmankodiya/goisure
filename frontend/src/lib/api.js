@@ -179,4 +179,24 @@ export const calculatorApi = {
   },
 };
 
+// AI Matching API (Gemma 4 powered)
+export const matchingApi = {
+  runMatch: async (caseId) => {
+    if (isMockMode()) return { data: await mockApi.matching.runMatch(caseId) };
+    return api.post(`/cases/${caseId}/match-ai`);
+  },
+  getResults: async (caseId) => {
+    if (isMockMode()) return { data: await mockApi.matching.getResults(caseId) };
+    return api.get(`/cases/${caseId}/match-results`);
+  },
+  overrideMatch: async (caseId, data) => {
+    if (isMockMode()) return { data: await mockApi.matching.overrideMatch(caseId, data) };
+    return api.post(`/cases/${caseId}/match-override`, data);
+  },
+  exportMatched: async (caseId) => {
+    if (isMockMode()) return { data: await mockApi.matching.exportMatched(caseId) };
+    return api.get(`/cases/${caseId}/export-matched`, { responseType: 'blob' });
+  },
+};
+
 export default api;

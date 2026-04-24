@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout';
+import MatchingPanel from '../components/MatchingPanel';
 import { casesApi } from '../lib/api';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -663,6 +664,18 @@ export default function NewCasePage() {
                     </div>
                   </div>
                 </div>
+
+                {/* AI Matching Panel */}
+                {caseId && (
+                  <MatchingPanel
+                    caseId={caseId}
+                    enrollmentUploaded={!!enrollmentResult}
+                    claimsUploaded={!!claimsResult}
+                    onMatchComplete={(results) => {
+                      console.log('Matching complete:', results);
+                    }}
+                  />
+                )}
 
                 {/* Template Download */}
                 <div className="flex items-center gap-3 p-3 bg-zinc-50 rounded-lg">

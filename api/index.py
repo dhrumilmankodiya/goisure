@@ -767,6 +767,234 @@ async def update_user(user_id: str, request: Request):
     
     return {"message": "User updated"}
 
+
+# ============================================================
+# AI MATCHING ENDPOINTS (Gemma 4 + Rule-based)
+# ============================================================
+
+# Import AI Matcher (lazy load to avoid startup errors)
+ai_matcher_instance = None
+
+def get_ai_matcher():
+    global ai_matcher_instance
+    if ai_matcher_instance is None:
+        from services.ai_matcher import AIMatcher, convert_results_to_dict
+        # Check if using local Ollama
+        use_local = os.environ.get("USE_LOCAL_LLM", "false").lower() == "true"
+        ai_matcher_instance = AIMatcher(use_local_llm=use_local)
+    return ai_matcher_instance
+
+
+@api_router.post("/cases/{case_id}/match-ai")
+async def run_ai_match(case_id: str, request: Request):
+    """
+    Run AI matching on uploaded enrollment + claims files.
+    
+    Uses hybrid approach:
+    1. Rule-based matching (fast, free) - handles 90%
+    2. Gemma 4 via OpenRouter (smart) - handles edge cases
+    """
+    user = await get_current_user(request)
+    db = get_db()
+    
+    if db is None:
+        return JSONResponse({"error": "Database not configured"}, status_code=503)
+    
+    # Verify case exists
+    case = await db.cases.find_one({"_id": ObjectId(case_id)})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    # Get enrollment data
+    enrollment_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "enrollment"})
+    if not enrollment_upload:
+        raise HTTPException(status_code=400, detail="No enrollment file uploaded. Upload enrollment Excel first.")
+    
+    # Get claims data
+    claims_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "claims"})
+    if not claims_upload:
+        raise HTTPException(status_code=400, detail="No claims file uploaded. Upload claims Excel first.")
+    
+    try:
+        # Convert to DataFrames
+        import pandas as pd
+        enrollment_df = pd.DataFrame(enrollment_upload.get('records', []))
+        claims_df = pd.DataFrame(claims_upload.get('records', []))
+        
+        if enrollment_df.empty:
+            raise HTTPException(status_code=400, detail="Enrollment data is empty")
+        if claims_df.empty:
+            raise HTTPException(status_code=400, detail="Claims data is empty")
+        
+        # Standardize column names for matching
+        # Enrollment: use 'name' or 'Name' field
+        if 'name' not in enrollment_df.columns and 'Name' not in enrollment_df.columns:
+            # Try to find name column
+            for col in enrollment_df.columns:
+                if 'name' in col.lower():
+                    enrollment_df = enrollment_df.rename(columns={col: 'name'})
+                    break
+        
+        # Claims: standardize to lowercase
+        claims_df.columns = [c.lower() for c in claims_df.columns]
+        enrollment_df.columns = [c.lower() for c in enrollment_df.columns]
+        
+        # Run AI matching
+        matcher = get_ai_matcher()
+        result = await matcher.match_batch(claims_df, enrollment_df)
+        
+        # Convert to serializable dict
+        result_dict = convert_results_to_dict(result)
+        
+        # Store in MongoDB
+        await db.match_results.update_one(
+            {"case_id": case_id},
+            {
+                "$set": {
+                    "case_id": case_id,
+                    "user_id": user.get("id"),
+                    **result_dict,
+                    "run_at": datetime.now(timezone.utc).isoformat()
+                }
+            },
+            upsert=True
+        )
+        
+        # Update case status
+        await db.cases.update_one(
+            {"_id": ObjectId(case_id)},
+            {
+                "$set": {
+                    "status": "ai_matching_completed",
+                    "match_rate": result.match_rate,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        )
+        
+        return {
+            "case_id": case_id,
+            **result_dict,
+            "message": f"Matched {result.matched_count}/{result.total_claims} claims ({result.match_rate:.1f}%)"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI matching failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@api_router.get("/cases/{case_id}/match-results")
+async def get_match_results(case_id: str, request: Request):
+    """Get AI matching results for a case"""
+    user = await get_current_user(request)
+    db = get_db()
+    
+    result = await db.match_results.find_one({"case_id": case_id})
+    if not result:
+        raise HTTPException(status_code=404, detail="No matching results found. Run AI match first.")
+    
+    # Remove MongoDB internal fields
+    result.pop("_id", None)
+    return result
+
+
+@api_router.post("/cases/{case_id}/match-override")
+async def override_match(case_id: str, request: Request):
+    """Override an AI match with manual selection"""
+    user = await get_current_user(request)
+    db = get_db()
+    
+    body = await request.json()
+    claim_name = body.get("claim_name")
+    override_enrollment = body.get("override_enrollment")
+    override_member_id = body.get("override_member_id", "")
+    reason = body.get("reason", "Manual override")
+    
+    if not claim_name or not override_enrollment:
+        raise HTTPException(status_code=400, detail="claim_name and override_enrollment required")
+    
+    # Get current results
+    match_result = await db.match_results.find_one({"case_id": case_id})
+    if not match_result:
+        raise HTTPException(status_code=404, detail="No matching results found")
+    
+    # Update the specific match
+    matches = match_result.get("matches", [])
+    for m in matches:
+        if m.get("claim_name") == claim_name:
+            m["matched_enrollment"] = override_enrollment
+            m["matched_member_id"] = override_member_id
+            m["match_score"] = 100
+            m["match_method"] = "MANUAL_OVERRIDE"
+            m["reasoning"] = reason
+            m["needs_review"] = False
+            break
+    
+    # Save updated results
+    await db.match_results.update_one(
+        {"case_id": case_id},
+        {"$set": {"matches": matches, f"overrides.{claim_name}": {"override_enrollment": override_enrollment, "reason": reason, "by": user.get("id"), "at": datetime.now(timezone.utc).isoformat()}}}
+    )
+    
+    return {"message": "Override saved", "claim_name": claim_name}
+
+
+@api_router.get("/cases/{case_id}/export-matched")
+async def export_matched(case_id: str, request: Request):
+    """Export matched data as structured Excel"""
+    user = await get_current_user(request)
+    db = get_db()
+    
+    match_result = await db.match_results.find_one({"case_id": case_id})
+    if not match_result:
+        raise HTTPException(status_code=404, detail="No matching results found")
+    
+    import pandas as pd
+    from io import BytesIO
+    
+    # Get original claims data
+    claims_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "claims"})
+    enrollment_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "enrollment"})
+    
+    if claims_upload and enrollment_upload:
+        claims_df = pd.DataFrame(claims_upload.get('records', []))
+        enrollment_df = pd.DataFrame(enrollment_upload.get('records', []))
+        
+        # Merge with match results
+        matches = match_result.get("matches", [])
+        match_df = pd.DataFrame(matches)
+        
+        if not match_df.empty and "claim_name" in match_df.columns:
+            # Merge claims with match info
+            claims_df['patient_name_clean'] = claims_df['patient_name'].str.upper().str.strip()
+            match_df['claim_name_clean'] = match_df['claim_name'].str.upper().str.strip()
+            
+            merged = claims_df.merge(
+                match_df[['claim_name_clean', 'matched_enrollment', 'matched_member_id', 'match_score', 'match_method', 'needs_review']],
+                left_on='patient_name_clean',
+                right_on='claim_name_clean',
+                how='left'
+            )
+            
+            # Drop temp columns
+            merged = merged.drop(columns=['patient_name_clean', 'claim_name_clean'], errors='ignore')
+            
+            # Convert to Excel
+            output = BytesIO()
+            merged.to_excel(output, index=False, sheet_name='Matched Data')
+            output.seek(0)
+            
+            return Response(
+                content=output.getvalue(),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename=matched_data_{case_id}.xlsx"}
+            )
+    
+    raise HTTPException(status_code=400, detail="Could not generate export")
+
+
 # ============ Include Router ============
 app.include_router(api_router)
 
