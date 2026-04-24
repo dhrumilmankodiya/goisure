@@ -312,7 +312,7 @@ export default function AIMatchReviewPage() {
                     </div>
                     <div className="bg-red-50 rounded-lg p-2">
                       <p className="text-lg font-bold text-red-600">{quality.confidence_distribution?.low || 0}</p>
-                      <p className="text-xs text-red-700">Low (<70%)</p>
+                      <p className="text-xs text-red-700">Low {'<'}70%)</p>
                     </div>
                   </div>
                 </CardContent>

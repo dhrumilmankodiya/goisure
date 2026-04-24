@@ -179,7 +179,7 @@ export const calculatorApi = {
   },
 };
 
-# AI Matching API (Gemma 4 powered)
+// AI Matching API (Gemma 4 powered)
 export const matchingApi = {
   runMatch: async (caseId) => {
     if (isMockMode()) return { data: await mockApi.matching.runMatch(caseId) };
