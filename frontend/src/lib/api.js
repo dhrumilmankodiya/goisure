@@ -179,7 +179,7 @@ export const calculatorApi = {
   },
 };
 
-// AI Matching API (Gemma 4 powered)
+# AI Matching API (Gemma 4 powered)
 export const matchingApi = {
   runMatch: async (caseId) => {
     if (isMockMode()) return { data: await mockApi.matching.runMatch(caseId) };
@@ -196,6 +196,22 @@ export const matchingApi = {
   exportMatched: async (caseId) => {
     if (isMockMode()) return { data: await mockApi.matching.exportMatched(caseId) };
     return api.get(`/cases/${caseId}/export-matched`, { responseType: 'blob' });
+  },
+  getAnalytics: async (caseId) => {
+    if (isMockMode()) return { data: await mockApi.matching.getAnalytics(caseId) };
+    return api.get(`/cases/${caseId}/analytics`);
+  },
+  flagField: async (caseId, data) => {
+    if (isMockMode()) return { data: await mockApi.matching.flagField(caseId, data) };
+    return api.post(`/cases/${caseId}/flag-field`, data);
+  },
+  reuploadErrors: async (caseId, data) => {
+    if (isMockMode()) return { data: await mockApi.matching.reuploadErrors(caseId, data) };
+    return api.post(`/cases/${caseId}/reupload-errors`, data);
+  },
+  submitToUnderwriter: async (caseId, data) => {
+    if (isMockMode()) return { data: await mockApi.matching.submitToUnderwriter(caseId, data) };
+    return api.post(`/cases/${caseId}/submit-underwriter`, data);
   },
 };
 

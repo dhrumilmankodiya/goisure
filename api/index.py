@@ -995,6 +995,194 @@ async def export_matched(case_id: str, request: Request):
     raise HTTPException(status_code=400, detail="Could not generate export")
 
 
+@api_router.get("/cases/{case_id}/analytics")
+async def get_analytics(case_id: str, request: Request):
+    """Get AI-driven analytics for matched data"""
+    user = await get_current_user(request)
+    db = get_db()
+    
+    # Get match results
+    match_result = await db.match_results.find_one({"case_id": case_id})
+    if not match_result:
+        raise HTTPException(status_code=404, detail="No matching results found. Run AI match first.")
+    
+    # Get claims and enrollment data
+    claims_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "claims"})
+    enrollment_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "enrollment"})
+    
+    try:
+        import pandas as pd
+        claims_df = pd.DataFrame(claims_upload.get('records', [])) if claims_upload else pd.DataFrame()
+        enrollment_df = pd.DataFrame(enrollment_upload.get('records', [])) if enrollment_upload else pd.DataFrame()
+        
+        # Generate analytics
+        from services.analytics import generate_analytics
+        matches = match_result.get('matches', [])
+        analytics = generate_analytics(matches, claims_df, enrollment_df)
+        
+        return {
+            "case_id": case_id,
+            **analytics,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+    
+    except Exception as e:
+        logger.error(f"Analytics generation failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@api_router.post("/cases/{case_id}/flag-field")
+async def flag_field(case_id: str, request: Request):
+    """Flag a field as incorrect in the matching results"""
+    user = await get_current_user(request)
+    db = get_db()
+    
+    body = await request.json()
+    claim_name = body.get("claim_name")
+    field_name = body.get("field_name")
+    issue_description = body.get("issue_description", "")
+    correct_value = body.get("correct_value", "")
+    
+    if not claim_name or not field_name:
+        raise HTTPException(status_code=400, detail="claim_name and field_name required")
+    
+    # Get current results
+    match_result = await db.match_results.find_one({"case_id": case_id})
+    if not match_result:
+        raise HTTPException(status_code=404, detail="No matching results found")
+    
+    # Add flag to the match
+    flags = match_result.get('field_flags', [])
+    flags.append({
+        "claim_name": claim_name,
+        "field_name": field_name,
+        "issue_description": issue_description,
+        "correct_value": correct_value,
+        "flagged_by": user.get("id"),
+        "flagged_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    await db.match_results.update_one(
+        {"case_id": case_id},
+        {"$set": {"field_flags": flags}}
+    )
+    
+    return {"message": "Field flagged", "total_flags": len(flags)}
+
+
+@api_router.post("/cases/{case_id}/reupload-errors")
+async def reupload_errors(case_id: str, request: Request):
+    """Re-upload only error cases (selective re-upload)"""
+    user = await get_current_user(request)
+    db = get_db()
+    
+    body = await request.json()
+    file_type = body.get("file_type")  # "enrollment" or "claims"
+    records = body.get("records", [])  # Only the error records
+    
+    if not file_type or not records:
+        raise HTTPException(status_code=400, detail="file_type and records required")
+    
+    if file_type not in ["enrollment", "claims"]:
+        raise HTTPException(status_code=400, detail="file_type must be 'enrollment' or 'claims'")
+    
+    # Store the selective re-upload
+    await db.uploads.update_one(
+        {"case_id": case_id, "file_type": f"{file_type}_errors"},
+        {
+            "$set": {
+                "case_id": case_id,
+                "file_type": f"{file_type}_errors",
+                "records": records,
+                "record_count": len(records),
+                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "uploaded_by": user.get("id")
+            }
+        },
+        upsert=True
+    )
+    
+    return {
+        "message": f"{len(records)} error {file_type} records re-uploaded",
+        "file_type": f"{file_type}_errors",
+        "record_count": len(records)
+    }
+
+
+@api_router.post("/cases/{case_id}/submit-underwriter")
+async def submit_to_underwriter(case_id: str, request: Request):
+    """Submit matched data to underwriter for review"""
+    user = await get_current_user(request)
+    db = get_db()
+    
+    body = await request.json()
+    selected_plan = body.get("selected_plan", "basic")
+    notes = body.get("notes", "")
+    
+    # Verify case exists
+    case = await db.cases.find_one({"_id": ObjectId(case_id)})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    # Verify matching is complete
+    match_result = await db.match_results.find_one({"case_id": case_id})
+    if not match_result:
+        raise HTTPException(status_code=400, detail="No matching results found")
+    
+    # Get analytics for final premium
+    claims_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "claims"})
+    enrollment_upload = await db.uploads.find_one({"case_id": case_id, "file_type": "enrollment"})
+    
+    import pandas as pd
+    claims_df = pd.DataFrame(claims_upload.get('records', [])) if claims_upload else pd.DataFrame()
+    enrollment_df = pd.DataFrame(enrollment_upload.get('records', [])) if enrollment_upload else pd.DataFrame()
+    
+    from services.analytics import generate_analytics
+    analytics = generate_analytics(match_result.get('matches', []), claims_df, enrollment_df)
+    
+    # Find selected plan premium
+    selected_premium = 0
+    for plan in analytics.get('premium_three_plans', []):
+        if plan.get('plan_type') == selected_plan:
+            selected_premium = plan.get('premium', 0)
+            break
+    
+    # Update case status and data
+    await db.cases.update_one(
+        {"_id": ObjectId(case_id)},
+        {
+            "$set": {
+                "status": "submitted_to_underwriter",
+                "selected_plan": selected_plan,
+                "suggested_premium": selected_premium,
+                "notes": notes,
+                "analytics": analytics,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "submitted_by": user.get("id"),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+        }
+    )
+    
+    # Create notification for underwriters
+    await db.notifications.insert_one({
+        "case_id": case_id,
+        "type": "case_submitted",
+        "title": f"New case submitted for underwriting: {case.get('client_name', case_id)}",
+        "message": f"Case {case_id} submitted with {selected_plan} plan - Premium: ₹{selected_premium:,}",
+        "for_roles": ["underwriter", "admin"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "is_read": False
+    })
+    
+    return {
+        "message": "Case submitted to underwriter",
+        "case_id": case_id,
+        "selected_plan": selected_plan,
+        "suggested_premium": selected_premium
+    }
+
+
 # ============ Include Router ============
 app.include_router(api_router)
 

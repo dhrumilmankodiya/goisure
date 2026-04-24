@@ -673,6 +673,7 @@ export default function NewCasePage() {
                     claimsUploaded={!!claimsResult}
                     onMatchComplete={(results) => {
                       console.log('Matching complete:', results);
+                      // Optionally navigate to AI review page
                     }}
                   />
                 )}
