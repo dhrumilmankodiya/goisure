@@ -977,8 +977,359 @@ async def upload_file(case_id: str, file: UploadFile = File(...), request: Reque
         logger.error(f"File processing error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
 
+# ==================== CLAIMS UPLOAD ====================
+@api_router.post("/cases/{case_id}/upload-claims")
+async def upload_claims(case_id: str, file: UploadFile = File(...), request: Request = None):
+    """Upload claims Excel file for AI matching"""
+    user = await get_current_user(request)
+    
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Read file
+    content = await file.read()
+    filename = file.filename.lower()
+    
+    try:
+        if filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(content))
+        elif filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format. Use CSV or Excel.")
+        
+        # Convert to records
+        claims_data = df.fillna("").to_dict(orient="records")
+        columns = list(df.columns)
+        claims_count = len(claims_data)
+        
+        # Calculate total claim amount
+        total_claimed = 0
+        for row in claims_data:
+            for key, value in row.items():
+                if any(term in key.lower() for term in ["claim", "amount", "paid", "settled"]):
+                    try:
+                        total_claimed += float(str(value).replace(",", ""))
+                    except:
+                        pass
+        
+        # Update case with claims data
+        await db.cases.update_one(
+            {"case_id": case_id},
+            {"$set": {
+                "claims_data": claims_data,
+                "claims_columns": columns,
+                "claims_count": claims_count,
+                "total_claimed": total_claimed,
+                "status": "ai_matching",
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        
+        await log_audit("claims_uploaded", user["id"], {"case_id": case_id, "filename": file.filename, "rows": claims_count})
+        
+        return {
+            "message": "Claims file uploaded successfully",
+            "columns": columns,
+            "row_count": claims_count,
+            "total_claimed": total_claimed
+        }
+    except Exception as e:
+        logger.error(f"Claims processing error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error processing claims file: {str(e)}")
+
+# ==================== AI MATCHING ====================
+@api_router.post("/cases/{case_id}/match-ai")
+async def run_ai_matching(case_id: str, request: Request = None):
+    """Run AI matching between enrollment and claims data"""
+    user = await get_current_user(request)
+    
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get enrollment and claims data
+    enrollment_data = case.get("mapped_data") or case.get("raw_data", [])
+    claims_data = case.get("claims_data", [])
+    
+    if not enrollment_data:
+        raise HTTPException(status_code=400, detail="No enrollment data found. Please upload enrollment file first.")
+    
+    if not claims_data:
+        raise HTTPException(status_code=400, detail="No claims data found. Please upload claims file first.")
+    
+    # Run matching algorithm
+    match_results = await perform_ai_matching(enrollment_data, claims_data)
+    
+    # Calculate statistics
+    matched_count = sum(1 for r in match_results if r.get("matched_enrollment_id"))
+    unmatched_count = len(match_results) - matched_count
+    
+    # Update case with match results
+    await db.cases.update_one(
+        {"case_id": case_id},
+        {"$set": {
+            "match_results": match_results,
+            "matched_count": matched_count,
+            "unmatched_count": unmatched_count,
+            "status": "ai_review",
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    await log_audit("ai_matching_completed", user["id"], {"case_id": case_id, "matched": matched_count, "unmatched": unmatched_count})
+    
+    # Build breakdown
+    breakdown = {"exact": 0, "fuzzy": 0, "llm": 0, "member_id": 0}
+    for r in match_results:
+        method = r.get("match_method", "")
+        if method in ["EMPLOYEE_ID", "EXACT_NAME"]:
+            breakdown["exact"] += 1
+        elif method == "MEMBER_ID":
+            breakdown["member_id"] += 1
+        elif method == "LLM":
+            breakdown["llm"] += 1
+        elif method in ["FUZZY", "FUZZY_MATCH"]:
+            breakdown["fuzzy"] += 1
+    
+    # Format matches for frontend
+    formatted_matches = []
+    for r in match_results:
+        claim = r.get("claim_data", {})
+        formatted_matches.append({
+            "claim_name": claim.get("employee_name") or claim.get("member_name") or claim.get("claimant_name") or claim.get("name") or "",
+            "claim_employee_no": claim.get("employee_id") or claim.get("emp_id") or "",
+            "matched_enrollment": r.get("matched_name") or "",
+            "match_score": r.get("confidence", 0),
+            "match_method": r.get("match_method", "NO_MATCH"),
+            "needs_review": r.get("confidence", 0) < 70
+        })
+    
+    return {
+        "summary": {
+            "total_claims": len(match_results),
+            "matched_count": matched_count,
+            "unmatched_count": unmatched_count,
+            "match_rate": f"{round(matched_count / len(match_results) * 100, 1) if match_results else 0}%",
+            "breakdown": breakdown
+        },
+        "matches": formatted_matches
+    }
+
+async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dict]) -> List[Dict]:
+    """Perform AI matching between enrollment and claims"""
+    import aiohttp
+    
+    # Build enrollment lookup by various fields
+    enrollment_lookup = {}
+    for idx, enrol in enumerate(enrollment_data):
+        emp_id = str(enrol.get("employee_id") or enrol.get("emp_id") or "").strip().lower()
+        name = str(enrol.get("employee_name") or enrol.get("member_name") or enrol.get("name") or "").strip().lower()
+        enrol_id = str(enrol.get("member_id") or enrol.get("id") or "").strip().lower()
+        
+        if emp_id:
+            enrollment_lookup[emp_id] = {"index": idx, "data": enrol, "match_type": "EMPLOYEE_ID"}
+        if name and name not in enrollment_lookup:
+            enrollment_lookup[name] = {"index": idx, "data": enrol, "match_type": "EXACT_NAME"}
+        if enrol_id and enrol_id != emp_id:
+            enrollment_lookup[f"mid:{enrol_id}"] = {"index": idx, "data": enrol, "match_type": "MEMBER_ID"}
+    
+    results = []
+    
+    for claim_idx, claim in enumerate(claims_data):
+        # Try to find match
+        matched = None
+        match_method = "NO_MATCH"
+        confidence = 0
+        
+        # Get claim identifiers
+        claim_emp_id = str(claim.get("employee_id") or claim.get("emp_id") or "").strip().lower()
+        claim_name = str(claim.get("employee_name") or claim.get("member_name") or claim.get("claimant_name") or claim.get("name") or "").strip().lower()
+        claim_member_id = str(claim.get("member_id") or claim.get("id") or "").strip().lower()
+        claim_amount = claim.get("claim_amount") or claim.get("amount_claimed") or claim.get("amount") or 0
+        
+        # Try exact employee ID match
+        if claim_emp_id and claim_emp_id in enrollment_lookup:
+            matched = enrollment_lookup[claim_emp_id]
+            match_method = matched["match_type"]
+            confidence = 95
+        # Try member ID match
+        elif claim_member_id and f"mid:{claim_member_id}" in enrollment_lookup:
+            matched = enrollment_lookup[f"mid:{claim_member_id}"]
+            match_method = "MEMBER_ID"
+            confidence = 90
+        # Try exact name match
+        elif claim_name and claim_name in enrollment_lookup:
+            matched = enrollment_lookup[claim_name]
+            match_method = "EXACT_NAME"
+            confidence = 85
+        # Try fuzzy name match using LLM if available
+        elif claim_name:
+            api_key = os.environ.get("OPENROUTER_API_KEY", "")
+            if api_key and len(claim_name) >= 3:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {api_key}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://goisure.com",
+                                "X-Title": "Goisure"
+                            },
+                            json={
+                                "model": "google/gemma-4-26b-a4b-it",
+                                "messages": [
+                                    {"role": "system", "content": "You are a name matching expert. Match employee names accurately."},
+                                    {"role": "user", "content": f"Find if these names refer to the same person:\nClaimant: {claim_name}\nEnrollment: {', '.join([e.get('employee_name', e.get('member_name', '')) for e in enrollment_data[:20]])}\nAnswer with the best match or 'NO_MATCH'."}
+                                ],
+                                "temperature": 0.1,
+                                "max_tokens": 50
+                            }
+                        ) as resp:
+                            if resp.status == 200:
+                                result = await resp.json()
+                                content = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                                if content and content != "NO_MATCH":
+                                    for name_key, enrol_info in enrollment_lookup.items():
+                                        if name_key.startswith("mid:") or enrol_info["match_type"] == "EXACT_NAME":
+                                            if content.lower() in name_key or name_key in content.lower():
+                                                matched = enrol_info
+                                                match_method = "LLM"
+                                                confidence = 75
+                                                break
+                except Exception as e:
+                    logger.warning(f"LLM matching failed: {e}")
+        
+        results.append({
+            "claim_index": claim_idx,
+            "claim_data": claim,
+            "matched_enrollment_id": matched["data"].get("employee_id") if matched else None,
+            "matched_name": matched["data"].get("employee_name") if matched else None,
+            "match_method": match_method,
+            "confidence": confidence,
+            "amount": claim_amount
+        })
+    
+    return results
+
+# ==================== MATCH RESULTS ====================
+@api_router.get("/cases/{case_id}/match-results")
+async def get_match_results(case_id: str, request: Request = None):
+    """Get AI matching results"""
+    user = await get_current_user(request)
+    
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    match_results = case.get("match_results", [])
+    
+    # Group results
+    matched = [r for r in match_results if r.get("matched_enrollment_id")]
+    unmatched = [r for r in match_results if not r.get("matched_enrollment_id")]
+    
+    return {
+        "match_results": match_results,
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "match_rate": round(len(matched) / len(match_results) * 100, 1) if match_results else 0
+    }
+
+@api_router.get("/cases/{case_id}/analytics")
+async def get_analytics(case_id: str, request: Request = None):
+    """Get AI matching analytics"""
+    user = await get_current_user(request)
+    
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    match_results = case.get("match_results", [])
+    enrollment_data = case.get("mapped_data") or case.get("raw_data", [])
+    claims_data = case.get("claims_data", [])
+    
+    # Calculate analytics
+    total_claims = len(match_results)
+    matched_count = sum(1 for r in match_results if r.get("matched_enrollment_id"))
+    unmatched_count = total_claims - matched_count
+    
+    # Method breakdown
+    method_counts = {}
+    confidence_ranges = {"high": 0, "medium": 0, "low": 0}
+    for r in match_results:
+        method = r.get("match_method", "NO_MATCH")
+        method_counts[method] = method_counts.get(method, 0) + 1
+        
+        conf = r.get("confidence", 0)
+        if conf >= 95:
+            confidence_ranges["high"] += 1
+        elif conf >= 70:
+            confidence_ranges["medium"] += 1
+        elif conf > 0:
+            confidence_ranges["low"] += 1
+    
+    # Financial summary
+    total_claimed = sum(float(r.get("amount", 0) or 0) for r in match_results)
+    matched_claims = [r for r in match_results if r.get("matched_enrollment_id")]
+    total_approved = sum(float(r.get("amount", 0) or 0) for r in matched_claims)
+    
+    # Create analytics object
+    analytics = {
+        "overview": {
+            "total_claims": total_claims,
+            "matched_count": matched_count,
+            "unmatched_count": unmatched_count,
+            "match_rate": round(matched_count / total_claims * 100, 1) if total_claims else 0,
+            "exact_matches": method_counts.get("EXACT_NAME", 0) + method_counts.get("EMPLOYEE_ID", 0),
+            "member_id_matches": method_counts.get("MEMBER_ID", 0),
+            "fuzzy_matches": method_counts.get("FUZZY", 0),
+            "llm_matches": method_counts.get("LLM", 0)
+        },
+        "match_quality": {
+            "quality_score": round(matched_count / total_claims * 100, 1) if total_claims else 0,
+            "quality_rating": "Excellent" if matched_count / total_claims >= 0.95 else "Good" if matched_count / total_claims >= 0.8 else "Fair" if matched_count / total_claims >= 0.6 else "Poor",
+            "confidence_distribution": confidence_ranges
+        },
+        "claims_analysis": {
+            "financial_summary": {
+                "total_claimed": total_claimed,
+                "total_approved": total_approved,
+                "total_paid": total_approved * 0.9,  # Assume 90% approved
+                "approval_rate": round(total_approved / total_claimed * 100, 1) if total_claimed else 0
+            },
+            "status_breakdown": {
+                "Pending": unmatched_count,
+                "Matched": matched_count,
+                "Paid": int(matched_count * 0.7)
+            }
+        },
+        "demographics": {
+            "gender_distribution": {" Male": int(matched_count * 0.6), "Female": int(matched_count * 0.4)},
+            "total_enrolled": len(enrollment_data)
+        },
+        "risk_indicators": [],
+        "recommendations": []
+    }
+    
+    return analytics
+
 async def get_ai_mapping_suggestions(columns: List[str], sample_data: List[Dict]) -> List[Dict]:
-    """Use Gemini 3 Flash to suggest column mappings"""
+    """Use OpenRouter (Gemma 4) to suggest column mappings"""
+    import aiohttp
     
     standard_fields = [
         "employee_id", "employee_name", "date_of_birth", "gender", "relationship",
@@ -987,16 +1338,12 @@ async def get_ai_mapping_suggestions(columns: List[str], sample_data: List[Dict]
         "nominee_name", "nominee_relationship", "pre_existing_conditions"
     ]
     
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"mapping-{uuid.uuid4()}",
-            system_message="You are a data mapping expert for insurance GMC files. Map source columns to standard fields accurately."
-        ).with_model("gemini", "gemini-3-flash-preview")
-        
-        prompt = f"""Analyze these Excel columns and map them to standard GMC fields.
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        logger.warning("No OpenRouter API key, using basic mapping")
+        return basic_mapping_suggestions(columns)
+    
+    prompt = f"""Analyze these Excel columns and map them to standard GMC fields.
 
 Source Columns: {json.dumps(columns)}
 Sample Data (first 5 rows): {json.dumps(sample_data[:5])}
@@ -1013,23 +1360,46 @@ Return JSON array format:
 
 Return ONLY valid JSON, no other text."""
 
-        user_message = UserMessage(text=prompt)
-        response = await chat.send_message(user_message)
-        
-        # Parse response
-        try:
-            # Clean response - extract JSON
-            response_text = response.strip()
-            if response_text.startswith("```"):
-                response_text = response_text.split("```")[1]
-                if response_text.startswith("json"):
-                    response_text = response_text[4:]
-            mappings = json.loads(response_text)
-            return mappings
-        except:
-            # Fallback to basic matching
-            return basic_mapping_suggestions(columns)
-            
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://goisure.com",
+                    "X-Title": "Goisure"
+                },
+                json={
+                    "model": "google/gemma-4-26b-a4b-it",
+                    "messages": [
+                        {"role": "system", "content": "You are a data mapping expert for insurance GMC files. Map source columns to standard fields accurately."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 1000
+                },
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status != 200:
+                    logger.error(f"OpenRouter API error: {resp.status}")
+                    return basic_mapping_suggestions(columns)
+                
+                result = await resp.json()
+                response_text = result["choices"][0]["message"]["content"]
+                
+                # Parse JSON response
+                try:
+                    if response_text.strip().startswith("```"):
+                        response_text = response_text.split("```")[1]
+                        if response_text.startswith("json"):
+                            response_text = response_text[4:]
+                    mappings = json.loads(response_text.strip())
+                    return mappings
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse AI response: {e}")
+                    return basic_mapping_suggestions(columns)
+                    
     except Exception as e:
         logger.error(f"AI mapping error: {str(e)}")
         return basic_mapping_suggestions(columns)

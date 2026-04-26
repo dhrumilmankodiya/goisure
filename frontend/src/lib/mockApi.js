@@ -410,48 +410,30 @@ export const mockApi = {
     },
     upload: async (caseId, file) => {
       await delay(500);
-      const index = mockCasesStore.findIndex(c => c.id === caseId);
-      if (index !== -1) {
-        mockCasesStore[index] = {
-          ...mockCasesStore[index],
-          status: 'uploaded',
-          filename: file?.name || 'employees.xlsx',
-          record_count: 50,
-          enrollment_uploaded: true,
-          updated_at: new Date().toISOString(),
-        };
-      }
+      // Don't require case to exist - just return success
       const currentUserId = sessionStorage.getItem('mock_user_id');
       const currentUser = mockUsersStore.find(u => u.id === currentUserId);
-      addAuditLog('file_uploaded', currentUserId, currentUser?.name, caseId, `Uploaded ${file?.name || 'employees.xlsx'}`);
+      if (currentUserId && currentUser) {
+        addAuditLog('file_uploaded', currentUserId, currentUser?.name, caseId, `Uploaded ${file?.name || 'employees.xlsx'}`);
+      }
       return {
         case_id: caseId,
         filename: file?.name || 'employees.xlsx',
         columns: ['Employee ID', 'Name', 'Age', 'Gender', 'Sum Insured', 'City', 'Department'],
         record_count: 50,
+        row_count: 50,
         status: 'uploaded',
       };
     },
     uploadClaims: async (caseId, file) => {
       await delay(500);
-      const index = mockCasesStore.findIndex(c => c.id === caseId);
-      if (index !== -1) {
-        mockCasesStore[index] = {
-          ...mockCasesStore[index],
-          claims_uploaded: true,
-          claims_filename: file?.name || 'claims.xlsx',
-          claims_record_count: 25,
-          updated_at: new Date().toISOString(),
-        };
-      }
-      const currentUserId = sessionStorage.getItem('mock_user_id');
-      const currentUser = mockUsersStore.find(u => u.id === currentUserId);
-      addAuditLog('claims_file_uploaded', currentUserId, currentUser?.name, caseId, `Uploaded claims file ${file?.name || 'claims.xlsx'}`);
+      // Don't require case to exist - just return success
       return {
         case_id: caseId,
         claims_filename: file?.name || 'claims.xlsx',
         claims_columns: ['Claim ID', 'Employee ID', 'Claim Amount', 'Claim Date', 'Status'],
         claims_row_count: 25,
+        record_count: 25,
         status: 'uploaded',
       };
     },
@@ -751,6 +733,103 @@ export const mockApi = {
   health: async () => {
     await delay(100);
     return { status: 'healthy', service: 'gmc-platform-demo', db: 'in-memory' };
+  },
+
+  // AI Matching
+  matching: {
+    runMatch: async (caseId) => {
+      await delay(1500);
+      // Simulate realistic matching results
+      return {
+        summary: {
+          total_claims: 31,
+          matched_count: 24,
+          unmatched_count: 7,
+          match_rate: '77.4%',
+          breakdown: { exact: 4, fuzzy: 12, llm: 5, member_id: 3 }
+        },
+        matches: [
+          { claim_name: 'ANJU M', claim_employee_no: 'ASDC02', matched_enrollment: 'ANJU', match_score: 100, match_method: 'EXACT', needs_review: false },
+          { claim_name: 'ANSH JHALDIYAL', claim_employee_no: '1513', matched_enrollment: 'ANSH', match_score: 95, match_method: 'MEMBER_ID', needs_review: false },
+          { claim_name: 'BALAJI S', claim_employee_no: '4001', matched_enrollment: 'BALAJI', match_score: 100, match_method: 'EXACT', needs_review: false },
+          { claim_name: 'DIVYA', claim_employee_no: '4137', matched_enrollment: 'DIVYA', match_score: 100, match_method: 'EXACT', needs_review: false },
+          { claim_name: 'GOLDI SHARMA', claim_employee_no: '1528', matched_enrollment: 'GOLDI', match_score: 95, match_method: 'MEMBER_ID', needs_review: false },
+          { claim_name: 'JYOTI', claim_employee_no: '4131', matched_enrollment: 'JYOTI', match_score: 100, match_method: 'EXACT', needs_review: false },
+          { claim_name: 'MENAKA', claim_employee_no: '4110', matched_enrollment: 'MENAKA', match_score: 100, match_method: 'EXACT', needs_review: false },
+          { claim_name: 'PREM SHANKAR', claim_employee_no: '4129', matched_enrollment: 'PREM', match_score: 85, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'RAJESH KUMAR', claim_employee_no: '4004', matched_enrollment: 'RAJESH', match_score: 90, match_method: 'LLM', needs_review: false },
+          { claim_name: 'RAVINDRA MEDHE', claim_employee_no: '4040', matched_enrollment: 'RAVINDRA', match_score: 88, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'REVATHI K', claim_employee_no: 'NA003', matched_enrollment: 'REVATHI', match_score: 87, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'SARANYA P', claim_employee_no: 'NS027', matched_enrollment: 'SARANYA', match_score: 87, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'SURYANSH BHARDWAJ', claim_employee_no: '4128', matched_enrollment: 'SURYANSH', match_score: 82, match_method: 'LLM', needs_review: false },
+          { claim_name: 'SUSHMA YADAV', claim_employee_no: 'NS001', matched_enrollment: 'SUSHMA', match_score: 85, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'SUSHMA YADAV', claim_employee_no: 'NS001', matched_enrollment: 'SUSHMA', match_score: 85, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'BHARGAVI RAI', claim_employee_no: 'NA002', matched_enrollment: 'BHARGAVI', match_score: 80, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'AKSHAY KADAM', claim_employee_no: '5062', matched_enrollment: '', match_score: 55, match_method: 'NO_MATCH', needs_review: true },
+          { claim_name: 'ANURAG VISHWAKARMA', claim_employee_no: '5061', matched_enrollment: '', match_score: 41, match_method: 'NO_MATCH', needs_review: true },
+          { claim_name: 'ARYAN YADAV', claim_employee_no: 'NS017', matched_enrollment: 'AARYAN', match_score: 66, match_method: 'LLM', needs_review: true },
+          { claim_name: 'DINESH K', claim_employee_no: 'NA008', matched_enrollment: 'Dinesh', match_score: 85, match_method: 'FUZZY', needs_review: false },
+          { claim_name: 'POOJA KADAM', claim_employee_no: '5063', matched_enrollment: 'POOJA', match_score: 62, match_method: 'FUZZY', needs_review: true },
+          { claim_name: 'POOJA KADAM', claim_employee_no: '5063', matched_enrollment: 'POOJA', match_score: 62, match_method: 'FUZZY', needs_review: true },
+          { claim_name: 'RAHUL PATEL', claim_employee_no: '4014', matched_enrollment: 'RAHUL', match_score: 70, match_method: 'FUZZY', needs_review: true },
+          { claim_name: 'SANKET MHASUDGE', claim_employee_no: '4008', matched_enrollment: 'Sanket', match_score: 64, match_method: 'FUZZY', needs_review: true },
+          { claim_name: 'SARIKA', claim_employee_no: '4060', matched_enrollment: 'SARIKA JAGDISH', match_score: 72, match_method: 'FUZZY', needs_review: true },
+          { claim_name: 'SURYA KUMAR', claim_employee_no: '4041', matched_enrollment: 'SHAURYA', match_score: 83, match_method: 'LLM', needs_review: false },
+          { claim_name: 'JASKARAN', claim_employee_no: '4138', matched_enrollment: 'BASKAR', match_score: 71, match_method: 'FUZZY', needs_review: true },
+          { claim_name: 'GURPREET BAGGA', claim_employee_no: '4119', matched_enrollment: '', match_score: 31, match_method: 'NO_MATCH', needs_review: true },
+          { claim_name: 'VISHWANATH KAND', claim_employee_no: '4062', matched_enrollment: '', match_score: 49, match_method: 'NO_MATCH', needs_review: true },
+          { claim_name: 'AKSHAY KADAM', claim_employee_no: '5062', matched_enrollment: '', match_score: 55, match_method: 'NO_MATCH', needs_review: true },
+        ]
+      };
+    },
+    getResults: async (caseId) => {
+      await delay(500);
+      // Return cached results from mock runMatch
+      return {
+        summary: {
+          total_claims: 31,
+          matched_count: 24,
+          unmatched_count: 7,
+          match_rate: '77.4%',
+          breakdown: { exact: 4, fuzzy: 12, llm: 5, member_id: 3 }
+        },
+        matches: []
+      };
+    },
+    overrideMatch: async (caseId, data) => {
+      await delay(300);
+      return { message: 'Override saved', case_id: caseId };
+    },
+    exportMatched: async (caseId) => {
+      await delay(500);
+      // Return a minimal blob
+      return { data: new Blob([''], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }) };
+    },
+    getAnalytics: async (caseId) => {
+      await delay(500);
+      return {
+        total_claims: 31,
+        matched: 24,
+        unmatched: 7,
+        verified: 16,
+        needs_review: 8,
+        claim_amount: 1929046,
+        approved_amount: 1526649,
+        approval_rate: 79.1
+      };
+    },
+    flagField: async (caseId, data) => {
+      await delay(200);
+      return { message: 'Field flagged', case_id: caseId };
+    },
+    reuploadErrors: async (caseId, data) => {
+      await delay(500);
+      return { message: 'Errors reuploaded', case_id: caseId };
+    },
+    submitToUnderwriter: async (caseId, data) => {
+      await delay(500);
+      return { message: 'Submitted to underwriter', case_id: caseId };
+    },
   },
 };
 

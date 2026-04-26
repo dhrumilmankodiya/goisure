@@ -220,39 +220,48 @@ export default function NewCasePage() {
       if (payload.previous_premium) payload.previous_premium = parseFloat(payload.previous_premium);
       if (payload.claims_ratio) payload.claims_ratio = parseFloat(payload.claims_ratio);
       const { data } = await casesApi.create(payload);
-      setCaseId(data.case_id);
+      console.log('Case created response:', data);
+      const newCaseId = data.id || data.case_id;
+      alert(`Created case with id: ${newCaseId}, full data: ${JSON.stringify(data)}`);
+      setCaseId(newCaseId);
       setStep(2);
       toast.success('Case created successfully');
     } catch (error) {
+      console.error('Create case error:', error);
+      alert(`Error: ${error.message}`);
       toast.error(error.response?.data?.detail || 'Failed to create case');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleEnrollmentUpload = async () => {
-    if (!enrollmentFile || !caseId) return;
+  const handleEnrollmentUpload = async (file) => {
+    if (!file || !caseId) return;
     setUploadingEnrollment(true);
     try {
-      const { data } = await casesApi.upload(caseId, enrollmentFile);
+      const { data } = await casesApi.upload(caseId, file);
+      console.log('Enrollment upload response:', data);
       setEnrollmentResult(data);
       toast.success('Enrollment data uploaded');
     } catch (error) {
+      console.error('Upload error:', error);
       toast.error(error.response?.data?.detail || 'Failed to upload enrollment file');
+      setEnrollmentFile(null);
     } finally {
       setUploadingEnrollment(false);
     }
   };
 
-  const handleClaimsUpload = async () => {
-    if (!claimsFile || !caseId) return;
+  const handleClaimsUpload = async (file) => {
+    if (!file || !caseId) return;
     setUploadingClaims(true);
     try {
-      const { data } = await casesApi.uploadClaims(caseId, claimsFile);
+      const { data } = await casesApi.uploadClaims(caseId, file);
       setClaimsResult(data);
       toast.success('Claims file uploaded');
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to upload claims file');
+      setClaimsFile(null);
     } finally {
       setUploadingClaims(false);
     }
@@ -265,7 +274,10 @@ export default function NewCasePage() {
   };
 
   const handleProceed = () => {
-    if (!canProceed()) return;
+    if (!canProceed()) {
+      toast.error('Please upload required files first');
+      return;
+    }
     navigate(`/cases/${caseId}/mapping`);
   };
 
@@ -595,22 +607,21 @@ export default function NewCasePage() {
                         label="Claims File"
                         hint="Historical claims data (.xlsx, .xls, .csv)"
                         file={claimsFile || claimsResult}
-                        onFileChange={(f) => validateFile(f) && setClaimsFile(f)}
+                        onFileChange={(f) => {
+                          if (validateFile(f)) {
+                            setClaimsFile(f);
+                            handleClaimsUpload(f);
+                          }
+                        }}
                         onRemove={() => setClaimsFile(null)}
                         disabled={uploadingClaims}
                         status={claimsResult ? 'uploaded' : null}
                       />
-                      {claimsFile && !claimsResult && (
-                        <Button
-                          onClick={handleClaimsUpload}
-                          disabled={uploadingClaims}
-                          className="w-full bg-[#0055FF] hover:bg-[#0040CC] text-sm"
-                          data-testid="upload-claims-button"
-                        >
-                          {uploadingClaims ? (
-                            <><div className="spinner w-4 h-4 border-white border-t-transparent mr-2" />Uploading...</>
-                          ) : 'Upload Claims'}
-                        </Button>
+                      {uploadingClaims && (
+                        <div className="flex items-center gap-2 text-sm text-zinc-500">
+                          <div className="spinner w-4 h-4 border-zinc-300 border-t-[#0055FF]" />
+                          Uploading...
+                        </div>
                       )}
                       {claimsResult && (
                         <p className="text-xs text-emerald-600">
@@ -627,22 +638,21 @@ export default function NewCasePage() {
                         label="Enrollment File"
                         hint="Member list with demographics (.xlsx, .xls, .csv)"
                         file={enrollmentFile || enrollmentResult}
-                        onFileChange={(f) => validateFile(f) && setEnrollmentFile(f)}
+                        onFileChange={(f) => {
+                          if (validateFile(f)) {
+                            setEnrollmentFile(f);
+                            handleEnrollmentUpload(f);
+                          }
+                        }}
                         onRemove={() => setEnrollmentFile(null)}
                         disabled={uploadingEnrollment}
                         status={enrollmentResult ? 'uploaded' : null}
                       />
-                      {enrollmentFile && !enrollmentResult && (
-                        <Button
-                          onClick={handleEnrollmentUpload}
-                          disabled={uploadingEnrollment}
-                          className="w-full bg-[#0055FF] hover:bg-[#0040CC] text-sm"
-                          data-testid="upload-enrollment-button"
-                        >
-                          {uploadingEnrollment ? (
-                            <><div className="spinner w-4 h-4 border-white border-t-transparent mr-2" />Uploading...</>
-                          ) : 'Upload Enrollments'}
-                        </Button>
+                      {uploadingEnrollment && (
+                        <div className="flex items-center gap-2 text-sm text-zinc-500">
+                          <div className="spinner w-4 h-4 border-zinc-300 border-t-[#0055FF]" />
+                          Uploading...
+                        </div>
                       )}
                       {enrollmentResult && (
                         <p className="text-xs text-emerald-600">
