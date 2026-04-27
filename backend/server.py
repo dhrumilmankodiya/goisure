@@ -1269,9 +1269,9 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
         results.append({
             "claim_index": claim_idx,
             "claim_data": claim,
-            "matched_enrollment_id": matched["data"].get("employee_id") or matched["data"].get("emp_id") or matched["data"].get("member_id") or matched["data"].get("Member_id") or matched["data"].get("EMP ID") or None,
-            "matched_name": matched["data"].get("Name") or matched["data"].get("name") or matched["data"].get("Employee Name") or matched["data"].get("employee_name") or "",
-            "matched_enrollment_data": matched["data"],
+            "matched_enrollment_id": (matched["data"].get("employee_id") or matched["data"].get("emp_id") or matched["data"].get("member_id") or matched["data"].get("Member_id") or matched["data"].get("EMP ID")) if matched else None,
+            "matched_name": (matched["data"].get("Name") or matched["data"].get("name") or matched["data"].get("Employee Name") or matched["data"].get("employee_name")) if matched else "",
+            "matched_enrollment_data": matched["data"] if matched else None,
             "match_method": match_method,
             "confidence": confidence,
             "amount": claim_amount
