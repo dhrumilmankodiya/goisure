@@ -933,8 +933,23 @@ async def upload_file(case_id: str, file: UploadFile = File(...), request: Reque
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format. Use CSV or Excel.")
         
-        # Convert to records
-        raw_data = df.fillna("").to_dict(orient="records")
+        # Convert to records - handle datetimes for JSON serialization
+        raw_data = []
+        for _, row in df.iterrows():
+            rec = {}
+            for k, v in row.items():
+                if pd.isna(v):
+                    rec[k] = ""
+                elif hasattr(v, 'isoformat'):
+                    rec[k] = v.isoformat()
+                elif hasattr(v, 'strftime'):
+                    try:
+                        rec[k] = v.strftime('%Y-%m-%dT%H:%M:%S')
+                    except Exception:
+                        rec[k] = str(v)
+                else:
+                    rec[k] = v
+            raw_data.append(rec)
         columns = list(df.columns)
         
         # Get AI mapping suggestions
@@ -1001,8 +1016,23 @@ async def upload_claims(case_id: str, file: UploadFile = File(...), request: Req
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format. Use CSV or Excel.")
         
-        # Convert to records
-        claims_data = df.fillna("").to_dict(orient="records")
+        # Convert to records - handle datetimes for JSON serialization
+        claims_data = []
+        for _, row in df.iterrows():
+            rec = {}
+            for k, v in row.items():
+                if pd.isna(v):
+                    rec[k] = ""
+                elif hasattr(v, 'isoformat'):
+                    rec[k] = v.isoformat()
+                elif hasattr(v, 'strftime'):
+                    try:
+                        rec[k] = v.strftime('%Y-%m-%dT%H:%M:%S')
+                    except Exception:
+                        rec[k] = str(v)
+                else:
+                    rec[k] = v
+            claims_data.append(rec)
         columns = list(df.columns)
         claims_count = len(claims_data)
         
