@@ -1102,10 +1102,17 @@ async def run_ai_matching(case_id: str, request: Request = None):
     formatted_matches = []
     for r in match_results:
         claim = r.get("claim_data", {})
+        # Support real field names: Patient_name, name, Name, etc.
+        claim_name_raw = claim.get("Patient_name") or claim.get("patient_name") or claim.get("Name") or claim.get("name") or claim.get("employee_name") or claim.get("member_name") or claim.get("claimant_name") or ""
+        enrollment = r.get("matched_name") or ""
+        if not enrollment and r.get("matched_enrollment_id"):
+            # Try to get name from matched enrollment data
+            matched_data = r.get("matched_enrollment_data", {})
+            enrollment = matched_data.get("Name") or matched_data.get("name") or matched_data.get("Employee Name") or str(r.get("matched_enrollment_id", ""))
         formatted_matches.append({
-            "claim_name": claim.get("employee_name") or claim.get("member_name") or claim.get("claimant_name") or claim.get("name") or "",
-            "claim_employee_no": claim.get("employee_id") or claim.get("emp_id") or "",
-            "matched_enrollment": r.get("matched_name") or "",
+            "claim_name": claim_name_raw,
+            "claim_employee_no": claim.get("employee_id") or claim.get("emp_id") or claim.get("Employee_id") or "",
+            "matched_enrollment": enrollment,
             "match_score": r.get("confidence", 0),
             "match_method": r.get("match_method", "NO_MATCH"),
             "needs_review": r.get("confidence", 0) < 70
@@ -1126,17 +1133,20 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
     """Perform AI matching between enrollment and claims"""
     import aiohttp
     
-    # Build enrollment lookup by various fields
+    # Build enrollment lookup by various fields (support real column names: Name, name, Employee Name etc.)
     enrollment_lookup = {}
+    enrollment_names_all = {}  # name -> (index, data) for fuzzy matching
     for idx, enrol in enumerate(enrollment_data):
-        emp_id = str(enrol.get("employee_id") or enrol.get("emp_id") or "").strip().lower()
-        name = str(enrol.get("employee_name") or enrol.get("member_name") or enrol.get("name") or "").strip().lower()
-        enrol_id = str(enrol.get("member_id") or enrol.get("id") or "").strip().lower()
-        
+        emp_id = str(enrol.get("employee_id") or enrol.get("emp_id") or enrol.get("Employee_id") or enrol.get("EMP ID") or "").strip().lower()
+        # Support: Name, name, Employee Name, EMPLOYEE NAME
+        name = str(enrol.get("Name") or enrol.get("name") or enrol.get("Employee Name") or enrol.get("employee_name") or enrol.get("member_name") or enrol.get("Member Name") or enrol.get("member_name") or enrol.get("Name ") or "").strip().lower()
+        enrol_id = str(enrol.get("member_id") or enrol.get("Member_id") or enrol.get("Member ID") or enrol.get("id") or "").strip().lower()
+
         if emp_id:
             enrollment_lookup[emp_id] = {"index": idx, "data": enrol, "match_type": "EMPLOYEE_ID"}
-        if name and name not in enrollment_lookup:
+        if name:
             enrollment_lookup[name] = {"index": idx, "data": enrol, "match_type": "EXACT_NAME"}
+            enrollment_names_all[name] = (idx, enrol)
         if enrol_id and enrol_id != emp_id:
             enrollment_lookup[f"mid:{enrol_id}"] = {"index": idx, "data": enrol, "match_type": "MEMBER_ID"}
     
@@ -1148,10 +1158,10 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
         match_method = "NO_MATCH"
         confidence = 0
         
-        # Get claim identifiers
-        claim_emp_id = str(claim.get("employee_id") or claim.get("emp_id") or "").strip().lower()
-        claim_name = str(claim.get("employee_name") or claim.get("member_name") or claim.get("claimant_name") or claim.get("name") or "").strip().lower()
-        claim_member_id = str(claim.get("member_id") or claim.get("id") or "").strip().lower()
+        # Get claim identifiers (support: Patient_name, patient_name, name, Claimant Name, etc.)
+        claim_emp_id = str(claim.get("employee_id") or claim.get("emp_id") or claim.get("Employee_id") or claim.get("EMP ID") or "").strip().lower()
+        claim_name = str(claim.get("Patient_name") or claim.get("patient_name") or claim.get("Name") or claim.get("name") or claim.get("employee_name") or claim.get("member_name") or claim.get("claimant_name") or claim.get("Claimant Name") or "").strip().lower()
+        claim_member_id = str(claim.get("member_id") or claim.get("Member_id") or claim.get("id") or "").strip().lower()
         claim_amount = claim.get("claim_amount") or claim.get("amount_claimed") or claim.get("amount") or 0
         
         # Try exact employee ID match
@@ -1169,7 +1179,26 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
             matched = enrollment_lookup[claim_name]
             match_method = "EXACT_NAME"
             confidence = 85
-        # Try fuzzy name match using LLM if available
+        # Try SequenceMatcher-based fuzzy match (instant, no API cost)
+        elif claim_name and len(claim_name) >= 3 and enrollment_names_all:
+            from difflib import SequenceMatcher
+            best_fuzzy = None
+            best_fuzzy_score = 0
+            for enrol_name, (fidx, fdata) in enrollment_names_all.items():
+                # Try both directions
+                score1 = SequenceMatcher(None, claim_name, enrol_name).ratio()
+                # Also try prefix/suffix — handle "BALAJI S" vs "BALAJI" case
+                score2 = SequenceMatcher(None, claim_name, enrol_name[:len(claim_name)] if len(enrol_name) > len(claim_name) else enrol_name).ratio()
+                score3 = SequenceMatcher(None, enrol_name, claim_name[:len(enrol_name)] if len(claim_name) > len(enrol_name) else claim_name).ratio()
+                score = max(score1, score2, score3)
+                if score > best_fuzzy_score and score >= 0.70:
+                    best_fuzzy_score = score
+                    best_fuzzy = (fidx, fdata)
+            if best_fuzzy:
+                matched = {"index": best_fuzzy[0], "data": best_fuzzy[1], "match_type": "FUZZY"}
+                match_method = "FUZZY"
+                confidence = int(best_fuzzy_score * 100)
+        # Try LLM-based match as last resort
         elif claim_name:
             api_key = os.environ.get("OPENROUTER_API_KEY", "")
             if api_key and len(claim_name) >= 3:
@@ -1187,7 +1216,7 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
                                 "model": "google/gemma-4-26b-a4b-it",
                                 "messages": [
                                     {"role": "system", "content": "You are a name matching expert. Match employee names accurately."},
-                                    {"role": "user", "content": f"Find if these names refer to the same person:\nClaimant: {claim_name}\nEnrollment: {', '.join([e.get('employee_name', e.get('member_name', '')) for e in enrollment_data[:20]])}\nAnswer with the best match or 'NO_MATCH'."}
+                                    {"role": "user", "content": f"Find if these names refer to the same person:\nClaimant: {claim_name}\nEnrollment candidates: {', '.join([str(e.get('Name') or e.get('name') or e.get('Employee Name') or 'UNKNOWN') for e in enrollment_data[:20]])}\nAnswer with the best matching name or 'NO_MATCH'."}
                                 ],
                                 "temperature": 0.1,
                                 "max_tokens": 50
@@ -1210,8 +1239,9 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
         results.append({
             "claim_index": claim_idx,
             "claim_data": claim,
-            "matched_enrollment_id": matched["data"].get("employee_id") if matched else None,
-            "matched_name": matched["data"].get("employee_name") if matched else None,
+            "matched_enrollment_id": matched["data"].get("employee_id") or matched["data"].get("emp_id") or matched["data"].get("member_id") or matched["data"].get("Member_id") or matched["data"].get("EMP ID") or None,
+            "matched_name": matched["data"].get("Name") or matched["data"].get("name") or matched["data"].get("Employee Name") or matched["data"].get("employee_name") or "",
+            "matched_enrollment_data": matched["data"],
             "match_method": match_method,
             "confidence": confidence,
             "amount": claim_amount
