@@ -404,16 +404,30 @@ async def upload_file(case_id: str, request: Request, file: UploadFile = File(..
         records = df.to_dict(orient="records")
         columns = list(df.columns)
         
-        # Clean NaN values
+        # Clean NaN values and convert datetimes to ISO strings for JSON serialization
         cleaned_records = []
         for r in records:
             cleaned = {k: ('' if pd.isna(v) else v) for k, v in r.items()}
-            cleaned_records.append(cleaned)
-        
+            # Convert datetime/timestamp objects to ISO strings for JSON serializability
+            for k, v in list(cleaned.items()):
+                if hasattr(v, 'isoformat'):
+                    cleaned[k] = v.isoformat()
+                elif hasattr(v, 'strftime'):
+                    try:
+                        cleaned[k] = v.strftime('%Y-%m-%dT%H:%M:%S')
+                    except Exception:
+                        pass
+        cleaned_records.append(cleaned)
+    
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
     
     # Store upload data
+    # Convert user.id to string for JSON serialization
+    uploaded_by = user.get("id")
+    if hasattr(uploaded_by, '__str__') and not isinstance(uploaded_by, str):
+        uploaded_by = str(uploaded_by)
+
     upload_doc = {
         "case_id": case_id,
         "file_type": "enrollment",  # Mark as enrollment file
@@ -421,7 +435,7 @@ async def upload_file(case_id: str, request: Request, file: UploadFile = File(..
         "columns": columns,
         "record_count": len(cleaned_records),
         "records": cleaned_records,
-        "uploaded_by": user["id"],
+        "uploaded_by": uploaded_by,
         "uploaded_at": datetime.now(timezone.utc).isoformat()
     }
     await db.uploads.insert_one(upload_doc)
@@ -458,28 +472,43 @@ async def upload_claims_file(case_id: str, request: Request, file: UploadFile = 
         else:
             df = pd.read_excel(io.BytesIO(content))
         
-        # Convert to records
-        records = df.to_dict(orient="records")
+        # Convert to records - handle datetimes for JSON serialization
+        claims_data = []
+        for _, row in df.iterrows():
+            rec = {}
+            for k, v in row.items():
+                if pd.isna(v):
+                    rec[k] = ""
+                elif hasattr(v, 'isoformat'):
+                    rec[k] = v.isoformat()
+                elif hasattr(v, 'strftime'):
+                    try:
+                        rec[k] = v.strftime('%Y-%m-%dT%H:%M:%S')
+                    except Exception:
+                        rec[k] = str(v)
+                else:
+                    rec[k] = v
+            claims_data.append(rec)
         columns = list(df.columns)
         
-        # Clean NaN values
-        cleaned_records = []
-        for r in records:
-            cleaned = {k: ('' if pd.isna(v) else v) for k, v in r.items()}
-            cleaned_records.append(cleaned)
         
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
     
     # Store claims upload data
+    # Convert user.id to string for JSON serialization
+    uploaded_by = user.get("id")
+    if hasattr(uploaded_by, '__str__') and not isinstance(uploaded_by, str):
+        uploaded_by = str(uploaded_by)
+
     claims_upload_doc = {
         "case_id": case_id,
         "file_type": "claims",  # Mark as claims file
         "filename": file.filename,
         "columns": columns,
-        "record_count": len(cleaned_records),
-        "records": cleaned_records,
-        "uploaded_by": user["id"],
+        "record_count": len(claims_data),
+        "records": claims_data,
+        "uploaded_by": uploaded_by,
         "uploaded_at": datetime.now(timezone.utc).isoformat()
     }
     await db.uploads.insert_one(claims_upload_doc)
