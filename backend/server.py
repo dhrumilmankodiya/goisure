@@ -32,12 +32,11 @@ def get_db():
     """Lazy database accessor - initializes on first use."""
     global _client, _db
     if _db is None:
-        mongo_url = os.environ.get('MONGO_URL', '')
+        mongo_url = os.environ.get('MONGO_URL', 'mongodb://127.0.0.1:27017')
         db_name = os.environ.get('DB_NAME', 'goisure')
-        if not mongo_url:
-            logger.warning("MONGO_URL not set - database operations will fail")
-        _client = AsyncIOMotorClient(mongo_url) if mongo_url else None
-        _db = _client[db_name] if _client else None
+        _client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
+        _db = _client[db_name]
+        logger.info(f"Connected to MongoDB: {mongo_url}, db: {db_name}")
     return _db
 
 # For backward compatibility with existing code that uses `db` directly

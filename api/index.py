@@ -416,6 +416,7 @@ async def upload_file(case_id: str, request: Request, file: UploadFile = File(..
     # Store upload data
     upload_doc = {
         "case_id": case_id,
+        "file_type": "enrollment",  # Mark as enrollment file
         "filename": file.filename,
         "columns": columns,
         "record_count": len(cleaned_records),
@@ -473,6 +474,7 @@ async def upload_claims_file(case_id: str, request: Request, file: UploadFile = 
     # Store claims upload data
     claims_upload_doc = {
         "case_id": case_id,
+        "file_type": "claims",  # Mark as claims file
         "filename": file.filename,
         "columns": columns,
         "record_count": len(cleaned_records),

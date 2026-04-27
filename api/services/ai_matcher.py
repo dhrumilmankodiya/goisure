@@ -25,19 +25,17 @@ logger = logging.getLogger(__name__)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Model settings
-# Current: Gemma 4 via OpenRouter (free tier available)
-# Future: Switch to local Ollama (gemma4:latest or gemma3:4b)
-CURRENT_MODEL = "google/gemma-4-2b-it"  # Gemma 4 2B instruction-tuned
+# Model settings - Gemma 4 free via OpenRouter
+CURRENT_MODEL = "google/gemma-4-26b-a4b-it"  # Gemma 4 free model
 OLLAMA_MODEL = "gemma4:2b"  # For local Ollama later
 
 # Matching thresholds
-FUZZY_THRESHOLD = 0.80  # 80% similarity for fuzzy match
-LLM_THRESHOLD = 0.70    # Use LLM for matches below this
+FUZZY_THRESHOLD = 0.75  # 75% similarity for fuzzy match (lowered for more matches)
+LLM_THRESHOLD = 0.60   # Use LLM for matches below this
 EXACT_CONFIDENCE = 100
 HIGH_CONFIDENCE = 95
 MEDIUM_CONFIDENCE = 80
-LOW_CONFIDENCE = 70
+LOW_CONFIDENCE = 60
 
 
 @dataclass
@@ -75,6 +73,24 @@ class MatchSummary:
 class RuleBasedMatcher:
     """Fast rule-based matching for common cases"""
     
+    # Column name aliases for flexible matching
+    NAME_FIELDS = ['name', 'Name', 'patient_name', 'Patient_name', 'member_name', 'Member Name', 'emp_name', 'claimant_name']
+    ID_FIELDS = ['employee_no', 'Employee No', 'employee_id', 'Employee ID', 'member_id', 'Member ID', 'emp_id', 'Emp ID']
+    
+    @staticmethod
+    def get_field_value(record: dict, possible_fields: list) -> str:
+        """Get value from record using any of the possible field names"""
+        for field in possible_fields:
+            if field in record:
+                val = record.get(field, '')
+                return str(val).strip() if val else ''
+            # Try lowercase version
+            for f in record.keys():
+                if f.lower().replace(' ', '_') == field.lower().replace(' ', '_'):
+                    val = record.get(f, '')
+                    return str(val).strip() if val else ''
+        return ''
+    
     @staticmethod
     def clean_name(name: str) -> str:
         """Clean and normalize name"""
@@ -99,28 +115,34 @@ class RuleBasedMatcher:
         """Calculate string similarity 0-1"""
         return SequenceMatcher(None, str(a).upper(), str(b).upper()).ratio()
     
-    def exact_match(self, claim_name: str, enrollment_df: pd.DataFrame) -> Optional[Tuple[str, str, float]]:
+    def exact_match(self, claim_name: str, enrollment_df) -> Optional[Tuple[str, str, float]]:
         """Try exact name match"""
         cleaned_claim = self.clean_name(claim_name)
         
         for idx, row in enrollment_df.iterrows():
-            cleaned_enroll = self.clean_name(row.get('name', row.get('Name', '')))
+            row_name = self.get_field_value(row, self.NAME_FIELDS)
+            cleaned_enroll = self.clean_name(row_name)
             if cleaned_claim == cleaned_enroll:
-                return (row.get('name', row.get('Name', '')), row.get('member_id', ''), EXACT_CONFIDENCE)
+                member_id = self.get_field_value(row, self.ID_FIELDS)
+                return (row_name, member_id, EXACT_CONFIDENCE)
         
         return None
     
-    def first_name_match(self, claim_name: str, enrollment_df: pd.DataFrame, threshold: float = FUZZY_THRESHOLD) -> Optional[Tuple[str, str, float]]:
+    def first_name_match(self, claim_name: str, enrollment_df, threshold: float = FUZZY_THRESHOLD) -> Optional[Tuple[str, str, float]]:
         """Match by first name with fuzzy similarity"""
         claim_first = self.extract_first_name(claim_name)
-        if not claim_first or len(claim_first) < 3:
+        if not claim_first or len(claim_first) < 2:
             return None
         
         best_match = None
         best_score = 0
         
         for idx, row in enrollment_df.iterrows():
-            enroll_first = self.extract_first_name(row.get('name', row.get('Name', '')))
+            row_name = self.get_field_value(row, self.NAME_FIELDS)
+            if not row_name:
+                continue
+            
+            enroll_first = self.extract_first_name(row_name)
             if not enroll_first:
                 continue
             
@@ -129,34 +151,39 @@ class RuleBasedMatcher:
                 score = MEDIUM_CONFIDENCE
                 # Boost score if last names also similar
                 claim_last = claim_name.split()[-1] if len(claim_name.split()) > 1 else ""
-                enroll_last = str(row.get('name', row.get('Name', ''))).split()[-1] if len(str(row.get('name', row.get('Name', ''))).split()) > 1 else ""
-                if claim_last and enroll_last:
-                    last_sim = self.similarity(claim_last, enroll_last)
+                row_last = row_name.split()[-1] if len(row_name.split()) > 1 else ""
+                if claim_last and row_last:
+                    last_sim = self.similarity(claim_last, row_last)
                     if last_sim > 0.7:
                         score = HIGH_CONFIDENCE
                 
-                return (row.get('name', row.get('Name', '')), row.get('member_id', ''), score)
+                member_id = self.get_field_value(row, self.ID_FIELDS)
+                return (row_name, member_id, score)
             
             # Fuzzy match for similar first names
             sim = self.similarity(claim_first, enroll_first)
             if sim > best_score and sim >= threshold:
                 best_score = sim
-                best_match = (row.get('name', row.get('Name', '')), row.get('member_id', ''), int(sim * 100))
+                member_id = self.get_field_value(row, self.ID_FIELDS)
+                best_match = (row_name, member_id, int(sim * 100))
         
         return best_match
     
-    def member_id_match(self, claim_emp_no: str, enrollment_df: pd.DataFrame) -> Optional[Tuple[str, str, float]]:
+    def member_id_match(self, claim_emp_no: str, enrollment_df) -> Optional[Tuple[str, str, float]]:
         """Match by employee number in member_id"""
         if not claim_emp_no:
             return None
         
         emp_no_str = str(claim_emp_no).strip()
         
-        # Check if member_id contains or ends with employee number
         for idx, row in enrollment_df.iterrows():
-            member_id = str(row.get('member_id', ''))
-            if emp_no_str in member_id or member_id.endswith(emp_no_str):
-                return (row.get('name', row.get('Name', '')), member_id, HIGH_CONFIDENCE)
+            member_id = self.get_field_value(row, self.ID_FIELDS)
+            if not member_id:
+                continue
+            member_id_str = str(member_id).strip()
+            if emp_no_str in member_id_str or member_id_str.endswith(emp_no_str):
+                row_name = self.get_field_value(row, self.NAME_FIELDS)
+                return (row_name, member_id, HIGH_CONFIDENCE)
         
         return None
 
@@ -176,18 +203,28 @@ class LLMMatcher:
     def _build_prompt(self, claim: Dict, candidates: List[Dict]) -> str:
         """Build matching prompt for Gemma 4"""
         
+        # Auto-detect name field
+        claim_name = self.rule_matcher.get_field_value(claim, self.rule_matcher.NAME_FIELDS)
+        claim_emp_no = self.rule_matcher.get_field_value(claim, self.rule_matcher.ID_FIELDS)
+        claim_dob = ''
+        for df in ['dob', 'DOB', 'date_of_birth']:
+            if df in claim and claim.get(df):
+                claim_dob = str(claim.get(df, ''))[:10]
+                break
+        claim_gender = claim.get('gender', claim.get('Gender', ''))
+        
         candidates_text = ""
-        for i, c in enumerate(candidates[:10], 1):  # Limit to top 10 candidates
+        for i, c in enumerate(candidates[:10], 1):
             candidates_text += f"{i}. Name: {c.get('name', 'N/A')}, Member ID: {c.get('member_id', 'N/A')}, DOB: {c.get('dob', 'N/A')}, Gender: {c.get('gender', 'N/A')}\n"
         
         prompt = f"""You are an insurance enrollment matching expert. Match this CLAIM to the most likely ENROLLMENT record.
 
 CLAIM DETAILS:
-- Name: {claim.get('patient_name', 'N/A')}
-- Employee No: {claim.get('employee_no', 'N/A')}
-- DOB: {claim.get('dob', 'N/A')}
-- Gender: {claim.get('gender', 'N/A')}
-- Relationship: {claim.get('relationship', 'N/A')}
+- Name: {claim_name}
+- Employee No: {claim_emp_no}
+- DOB: {claim_dob}
+- Gender: {claim_gender}
+- Relationship: {claim.get('relationship', claim.get('Relationship', 'N/A'))}
 
 TOP CANDIDATES FROM ENROLLMENT:
 {candidates_text}
@@ -323,9 +360,10 @@ class AIMatcher:
     ) -> MatchResult:
         """Match a single claim against enrollment records"""
         
-        claim_name = claim.get('patient_name', '')
-        claim_emp_no = str(claim.get('employee_no', ''))
-        claim_dob = claim.get('dob', '')
+        # Auto-detect column names in claim record
+        claim_name = self.rule_matcher.get_field_value(claim, self.rule_matcher.NAME_FIELDS)
+        claim_emp_no = self.rule_matcher.get_field_value(claim, self.rule_matcher.ID_FIELDS)
+        claim_dob = str(claim.get('dob', claim.get('DOB', claim.get('date_of_birth', ''))))[:10] if claim.get('dob') or claim.get('DOB') or claim.get('date_of_birth') else ''
         
         # Strategy 1: Exact match (100% confidence)
         exact = self.rule_matcher.exact_match(claim_name, enrollment_df)
@@ -377,11 +415,19 @@ class AIMatcher:
             # Get top candidates for LLM
             candidates = []
             for idx, row in enrollment_df.iterrows():
+                row_name = self.rule_matcher.get_field_value(row, self.rule_matcher.NAME_FIELDS)
+                member_id = self.rule_matcher.get_field_value(row, self.rule_matcher.ID_FIELDS)
+                dob = ''
+                for dfield in ['dob', 'DOB', 'date_of_birth', 'Date of Birth']:
+                    if dfield in row:
+                        dob = str(row.get(dfield, ''))[:10]
+                        break
+                gender = row.get('gender', row.get('Gender', ''))
                 candidates.append({
-                    'name': row.get('name', row.get('Name', '')),
-                    'member_id': row.get('member_id', ''),
-                    'dob': str(row.get('date_of_birth', row.get('Date of Birth', '')))[:10] if row.get('date_of_birth') or row.get('Date of Birth') else '',
-                    'gender': row.get('gender', row.get('Gender', ''))
+                    'name': row_name,
+                    'member_id': member_id,
+                    'dob': dob,
+                    'gender': gender
                 })
             
             llm_result = await self.llm_matcher.match_with_llm(claim, candidates)
