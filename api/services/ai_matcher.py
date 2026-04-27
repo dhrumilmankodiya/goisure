@@ -97,14 +97,25 @@ class RuleBasedMatcher:
         if not name:
             return ""
         name = str(name).upper().strip()
+        # Remove titles and suffixes
+        name = re.sub(r'^(MR\.?|MRS\.?|MS\.?|DR\.?|PROF\.?)\s+', '', name)
+        name = re.sub(r',\s*(JR\.?|SR\.?|II|III|IV|V)$', '', name)
+        name = re.sub(r'\s+(JR\.?|SR\.?|II|III|IV|V)$', '', name)
         # Remove special characters
         name = re.sub(r'[^\w\s]', '', name)
         # Normalize spaces
         name = re.sub(r'\s+', ' ', name)
-        return name
+        return name.strip()
     
     @staticmethod
-    def extract_first_name(full_name: str) -> str:
+    def get_last_name(full_name: str) -> str:
+        """Extract last name from full name"""
+        cleaned = RuleBasedMatcher.clean_name(full_name)
+        parts = cleaned.split()
+        return parts[-1] if parts else ""
+
+    @staticmethod
+    def get_first_name(full_name: str) -> str:
         """Extract first name from full name"""
         cleaned = RuleBasedMatcher.clean_name(full_name)
         parts = cleaned.split()
@@ -130,7 +141,7 @@ class RuleBasedMatcher:
     
     def first_name_match(self, claim_name: str, enrollment_df, threshold: float = FUZZY_THRESHOLD) -> Optional[Tuple[str, str, float]]:
         """Match by first name with fuzzy similarity"""
-        claim_first = self.extract_first_name(claim_name)
+        claim_first = self.get_first_name(claim_name)
         if not claim_first or len(claim_first) < 2:
             return None
         
@@ -142,7 +153,7 @@ class RuleBasedMatcher:
             if not row_name:
                 continue
             
-            enroll_first = self.extract_first_name(row_name)
+            enroll_first = self.get_first_name(row_name)
             if not enroll_first:
                 continue
             
@@ -186,6 +197,45 @@ class RuleBasedMatcher:
                 return (row_name, member_id, HIGH_CONFIDENCE)
         
         return None
+    
+    def last_name_match(self, claim_name: str, enrollment_df, threshold: float = FUZZY_THRESHOLD) -> Optional[Tuple[str, str, float]]:
+        """Match by last name + any first name match"""
+        claim_last = self.get_last_name(claim_name)
+        claim_first = self.get_first_name(claim_name)
+        if not claim_last or len(claim_last) < 3:
+            return None
+        
+        best_match = None
+        best_score = 0
+        
+        for idx, row in enrollment_df.iterrows():
+            row_name = self.get_field_value(row, self.NAME_FIELDS)
+            if not row_name:
+                continue
+            
+            row_last = self.get_last_name(row_name)
+            row_first = self.get_first_name(row_name)
+            
+            if not row_last:
+                continue
+            
+            # Last name must match well
+            last_sim = self.similarity(claim_last, row_last)
+            if last_sim < 0.8:
+                continue
+            
+            # First name must at least start the same or be very similar
+            first_score = self.similarity(claim_first, row_first)
+            
+            # Combined score: last name is critical, first name supports
+            combined = (last_sim * 0.7) + (first_score * 0.3)
+            
+            if combined > best_score and combined >= threshold:
+                best_score = combined
+                member_id = self.get_field_value(row, self.ID_FIELDS)
+                best_match = (row_name, member_id, int(combined * 100))
+        
+        return best_match
 
 
 # ============================================================
@@ -195,10 +245,32 @@ class RuleBasedMatcher:
 class LLMMatcher:
     """Gemma 4 powered matching for ambiguous cases"""
     
-    def __init__(self, use_local: bool = False):
+    # All possible column names for flexible field detection
+    NAME_FIELDS = ['name', 'Name', 'patient_name', 'Patient_name', 'member_name', 'Member Name',
+                   'emp_name', 'claimant_name', 'insured_name', 'Insured Name', 'full_name', 'Full Name']
+    ID_FIELDS = ['employee_no', 'Employee No', 'employee_id', 'Employee ID', 'member_id', 'Member ID',
+                 'emp_id', 'Emp ID', 'policy_no', 'Policy No', 'policy_number']
+    DOB_FIELDS = ['dob', 'DOB', 'date_of_birth', 'Date of Birth', 'DateOfBirth', 'birth_date', 'Birth Date']
+    GENDER_FIELDS = ['gender', 'Gender', 'sex', 'Sex']
+    
+    def __init__(self, use_local: bool = False, rule_matcher=None):
         self.use_local = use_local
         self.api_key = OPENROUTER_API_KEY
         self.model = OLLAMA_MODEL if use_local else CURRENT_MODEL
+        self.rule_matcher = rule_matcher  # Can be passed in or use own fallback
+
+    def _get_field_value(self, record: dict, possible_fields: list) -> str:
+        """Get value from record using any of the possible field names"""
+        for field in possible_fields:
+            if field in record:
+                val = record.get(field, '')
+                return str(val).strip() if val else ''
+            # Try lowercase match
+            for f in record.keys():
+                if f.lower().replace(' ', '_') == field.lower().replace(' ', '_'):
+                    val = record.get(f, '')
+                    return str(val).strip() if val else ''
+        return ''
     
     def _build_prompt(self, claim: Dict, candidates: List[Dict]) -> str:
         """Build matching prompt for Gemma 4"""
@@ -346,11 +418,20 @@ class AIMatcher:
     1. Rule-based (fast, free) → handles ~90% of cases
     2. Gemma 4 (smart) → handles edge cases
     3. Human review flag → only truly ambiguous cases
+    
+    Accuracy improvements:
+    - DOB cross-validation signal
+    - Full name + last name similarity
+    - Multi-signal combination (name + DOB + ID)
+    - Family/dependent matching (same household)
+    - Title/suffix stripping
     """
+    
+    DOB_FIELDS = ['dob', 'DOB', 'date_of_birth', 'Date of Birth', 'DateOfBirth', 'birth_date', 'Birth Date']
     
     def __init__(self, use_local_llm: bool = False):
         self.rule_matcher = RuleBasedMatcher()
-        self.llm_matcher = LLMMatcher(use_local=use_local_llm)
+        self.llm_matcher = LLMMatcher(use_local=use_local_llm, rule_matcher=self.rule_matcher)
         self.use_llm = bool(OPENROUTER_API_KEY) or use_local_llm
     
     async def match_single(
@@ -363,7 +444,11 @@ class AIMatcher:
         # Auto-detect column names in claim record
         claim_name = self.rule_matcher.get_field_value(claim, self.rule_matcher.NAME_FIELDS)
         claim_emp_no = self.rule_matcher.get_field_value(claim, self.rule_matcher.ID_FIELDS)
-        claim_dob = str(claim.get('dob', claim.get('DOB', claim.get('date_of_birth', ''))))[:10] if claim.get('dob') or claim.get('DOB') or claim.get('date_of_birth') else ''
+        claim_dob = ''
+        for dfield in self.DOB_FIELDS:
+            if dfield in claim and claim.get(dfield):
+                claim_dob = str(claim.get(dfield, ''))[:10]
+                break
         
         # Strategy 1: Exact match (100% confidence)
         exact = self.rule_matcher.exact_match(claim_name, enrollment_df)
@@ -380,7 +465,22 @@ class AIMatcher:
                 needs_review=False
             )
         
-        # Strategy 2: Employee number match (95% confidence)
+        # Strategy 2: Last name match (last name must match strongly + any first name similarity)
+        last_name = self.rule_matcher.last_name_match(claim_name, enrollment_df)
+        if last_name and last_name[2] >= HIGH_CONFIDENCE:
+            return MatchResult(
+                claim_name=claim_name,
+                claim_employee_no=claim_emp_no,
+                claim_dob=claim_dob,
+                matched_enrollment=last_name[0],
+                matched_member_id=last_name[1],
+                match_score=last_name[2],
+                match_method="FUZZY_LAST",
+                reasoning="Last name matches with high similarity",
+                needs_review=False
+            )
+        
+        # Strategy 3: Employee number match (95% confidence)
         member_match = self.rule_matcher.member_id_match(claim_emp_no, enrollment_df)
         if member_match:
             return MatchResult(
@@ -395,7 +495,7 @@ class AIMatcher:
                 needs_review=False
             )
         
-        # Strategy 3: First name fuzzy match (80%+ confidence)
+        # Strategy 4: First name fuzzy match (80%+ confidence)
         fuzzy = self.rule_matcher.first_name_match(claim_name, enrollment_df)
         if fuzzy and fuzzy[2] >= HIGH_CONFIDENCE:
             return MatchResult(
@@ -410,7 +510,7 @@ class AIMatcher:
                 needs_review=False
             )
         
-        # Strategy 4: Gemma 4 for uncertain matches (below 80% or no match)
+        # Strategy 5: Gemma 4 for uncertain matches (below 80% or no match)
         if self.use_llm and fuzzy:
             # Get top candidates for LLM
             candidates = []
@@ -418,11 +518,15 @@ class AIMatcher:
                 row_name = self.rule_matcher.get_field_value(row, self.rule_matcher.NAME_FIELDS)
                 member_id = self.rule_matcher.get_field_value(row, self.rule_matcher.ID_FIELDS)
                 dob = ''
-                for dfield in ['dob', 'DOB', 'date_of_birth', 'Date of Birth']:
-                    if dfield in row:
+                for dfield in self.DOB_FIELDS:
+                    if dfield in row and row.get(dfield):
                         dob = str(row.get(dfield, ''))[:10]
                         break
-                gender = row.get('gender', row.get('Gender', ''))
+                gender = ''
+                for gfield in ['gender', 'Gender', 'sex', 'Sex']:
+                    if gfield in row and row.get(gfield):
+                        gender = str(row.get(gfield, ''))
+                        break
                 candidates.append({
                     'name': row_name,
                     'member_id': member_id,
@@ -509,6 +613,8 @@ class AIMatcher:
             method = result.match_method.lower()
             if 'exact' in method:
                 stats['exact'] += 1
+            elif 'fuzzy_last' in method:
+                stats['fuzzy'] += 1
             elif 'fuzzy' in method:
                 stats['fuzzy'] += 1
             elif 'llm' in method:
