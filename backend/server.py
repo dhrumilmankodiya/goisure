@@ -202,7 +202,7 @@ api_router = APIRouter(prefix="/api")
 # and other common deployment platforms with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|http://localhost:\d+|null",
+    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|http://localhost:\d+|null|https://43\.153\.173\.156",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
