@@ -480,22 +480,7 @@ class AIMatcher:
                 needs_review=False
             )
         
-        # Strategy 3: Employee number match (95% confidence)
-        member_match = self.rule_matcher.member_id_match(claim_emp_no, enrollment_df)
-        if member_match:
-            return MatchResult(
-                claim_name=claim_name,
-                claim_employee_no=claim_emp_no,
-                claim_dob=claim_dob,
-                matched_enrollment=member_match[0],
-                matched_member_id=member_match[1],
-                match_score=member_match[2],
-                match_method="MEMBER_ID",
-                reasoning="Employee number found in member ID",
-                needs_review=False
-            )
-        
-        # Strategy 4: First name fuzzy match (80%+ confidence)
+        # Strategy 3: First name fuzzy match (80%+ confidence)
         fuzzy = self.rule_matcher.first_name_match(claim_name, enrollment_df)
         if fuzzy and fuzzy[2] >= HIGH_CONFIDENCE:
             return MatchResult(
@@ -510,7 +495,7 @@ class AIMatcher:
                 needs_review=False
             )
         
-        # Strategy 5: Gemma 4 for uncertain matches (below 80% or no match)
+        # Strategy 4: Gemma 4 for uncertain matches (below 80% or no match)
         if self.use_llm and fuzzy:
             # Get top candidates for LLM
             candidates = []
@@ -551,7 +536,7 @@ class AIMatcher:
                         needs_review=llm_result.get('confidence', 0) < 85
                     )
         
-        # Strategy 5: Low confidence fuzzy or no match - flag for review
+        # Strategy 5: Low confidence fuzzy — still return it flagged for review
         if fuzzy:
             return MatchResult(
                 claim_name=claim_name,
@@ -563,6 +548,21 @@ class AIMatcher:
                 match_method="FUZZY",
                 reasoning="Low confidence fuzzy match - review needed",
                 needs_review=True
+            )
+        
+        # Strategy 6: Employee number match when no name match found (95% confidence)
+        member_match = self.rule_matcher.member_id_match(claim_emp_no, enrollment_df)
+        if member_match:
+            return MatchResult(
+                claim_name=claim_name,
+                claim_employee_no=claim_emp_no,
+                claim_dob=claim_dob,
+                matched_enrollment=member_match[0],
+                matched_member_id=member_match[1],
+                match_score=member_match[2],
+                match_method="MEMBER_ID",
+                reasoning="Employee number found in member ID (no name match)",
+                needs_review=False
             )
         
         # No match found
