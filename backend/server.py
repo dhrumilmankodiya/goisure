@@ -202,7 +202,7 @@ api_router = APIRouter(prefix="/api")
 # and other common deployment platforms with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|http://localhost:\d+|null|https://43\.153\.173\.156",
+    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|http://localhost:\d+|http://null|http://43\.153\.173\.156|https://43\.153\.173\.156",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -237,8 +237,8 @@ async def register(data: UserCreate, response: Response):
     
     # Remove domain from cookie to work with any domain (cloudflare, localtunnel, etc.)
     # secure=True required when samesite=none for modern browsers
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=True, samesite="none", max_age=3600, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=True, samesite="none", max_age=604800, path="/")
+    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=3600, path="/")
+    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
     
     await log_audit("user_registered", user_id, {"email": email, "role": user_doc["role"]})
     
@@ -277,8 +277,8 @@ async def login(data: UserLogin, response: Response, request: Request):
     access_token = create_access_token(user_id, email)
     refresh_token = create_refresh_token(user_id)
     
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=True, samesite="none", max_age=3600, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=True, samesite="none", max_age=604800, path="/")
+    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=3600, path="/")
+    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
     
     await log_audit("user_login", user_id, {"email": email})
     
@@ -316,7 +316,7 @@ async def refresh_token(request: Request, response: Response):
         access_token = create_access_token(user_id, user["email"])
         # Set cookie without domain to work with any domain
         # secure=True required when samesite=none for modern browsers
-        response.set_cookie(key="access_token", value=access_token, httponly=True, secure=True, samesite="none", max_age=3600, path="/")
+        response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=3600, path="/")
         return {"message": "Token refreshed", "access_token": access_token}
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Refresh token expired")
@@ -1555,9 +1555,9 @@ async def apply_mapping(case_id: str, overrides: List[MappingOverride], request:
             errors.append({"row": idx, "errors": mapped_row["_errors"]})
         mapped_data.append(mapped_row)
     
-    # Calculate AI confidence
-    high_confidence = sum(1 for s in mapping_suggestions if s.get("confidence") == "high")
-    ai_confidence = round((high_confidence / len(mapping_suggestions)) * 100) if mapping_suggestions else 0
+    # Calculate AI confidence - counts both high and medium confidence as meaningful matches
+    meaningful_confidence = sum(1 for s in mapping_suggestions if s.get("confidence") in ("high", "medium"))
+    ai_confidence = round((meaningful_confidence / len(mapping_suggestions)) * 100) if mapping_suggestions else 0
     
     # Update case
     new_status = "data_correction" if errors else "review"

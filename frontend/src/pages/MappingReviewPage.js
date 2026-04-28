@@ -130,6 +130,8 @@ export default function MappingReviewPage() {
 
   const sampleData = caseData?.raw_data?.slice(0, 3) || [];
   const highConfidenceCount = mappings.filter(m => m.confidence === 'high').length;
+  const mediumConfidenceCount = mappings.filter(m => m.confidence === 'medium').length;
+  const meaningfulConfidenceCount = highConfidenceCount + mediumConfidenceCount;
   const mappedCount = mappings.filter(m => m.suggested_field !== 'unmapped').length;
 
   return (
@@ -156,7 +158,7 @@ export default function MappingReviewPage() {
           <div className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 rounded-lg">
             <Sparkles className="w-5 h-5 text-[#0055FF]" />
             <span className="text-sm">
-              <strong>{highConfidenceCount}</strong> of {mappings.length} columns with high confidence
+              <strong>{meaningfulConfidenceCount}</strong> of {mappings.length} meaningful mappings (<strong>{highConfidenceCount}</strong> high, <strong>{mediumConfidenceCount}</strong> medium)
             </span>
           </div>
           <div className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 rounded-lg">

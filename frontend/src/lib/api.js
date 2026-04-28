@@ -73,6 +73,18 @@ export const casesApi = {
     if (isMockMode()) return { data: await mockApi.cases.submit(caseId) };
     return api.post(`/cases/${caseId}/submit`);
   },
+  runMapping: async (caseId) => {
+    if (isMockMode()) return { data: await mockApi.cases.runMapping(caseId) };
+    return api.post(`/cases/${caseId}/match-ai`);
+  },
+  getMappingResults: async (caseId) => {
+    if (isMockMode()) return { data: await mockApi.cases.getMappingResults(caseId) };
+    return api.get(`/cases/${caseId}`);
+  },
+  exportMappedData: async (caseId) => {
+    if (isMockMode()) return { data: await mockApi.cases.exportMappedData(caseId) };
+    return api.get(`/cases/${caseId}/match-results`, { responseType: 'blob' });
+  },
   startReview: async (caseId) => {
     if (isMockMode()) return { data: await mockApi.cases.startReview(caseId) };
     return api.post(`/cases/${caseId}/review`);

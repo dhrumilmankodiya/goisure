@@ -297,7 +297,7 @@ export const mockApi = {
       // Store session
       sessionStorage.setItem('mock_user_id', user.id);
       sessionStorage.setItem('mock_user_role', user.role);
-      return { ...user, access_token: `mock-token-${user.id}` };
+      const result = { ...user, access_token: `mock-token-${user.id}` };
     },
     register: async (data) => {
       await delay();
@@ -517,7 +517,85 @@ export const mockApi = {
       );
       return { case_id: caseId, status: decision.decision === 'approve' ? 'approved' : 'rejected', notes: decision.notes };
     },
+  
+  runMapping: async (caseId) => {
+    console.log('Mock AI mapping for case', caseId);
+    await delay(2000);
+    const cache = getCache(caseId);
+    const matches = cache?.matchResults || {
+      summary: { total_claims: 8, matched_count: 6, unmatched_count: 2, match_rate: '75%', breakdown: { exact: 2, fuzzy: 2, llm: 1, member_id: 1 } },
+      matches: [
+        { claim_name: 'ANJU M', claim_employee_no: 'ASDC02', matched_enrollment: 'ANJU M', match_score: 100, match_method: 'EXACT', needs_review: false },
+        { claim_name: 'BALAJI S', claim_employee_no: '4001', matched_enrollment: 'BALAJI S', match_score: 100, match_method: 'EXACT', needs_review: false },
+        { claim_name: 'DIVYA K', claim_employee_no: '4137', matched_enrollment: 'DIVYA K', match_score: 100, match_method: 'EXACT', needs_review: false },
+        { claim_name: 'PREM SHANKAR', claim_employee_no: '4129', matched_enrollment: 'PREM SHANKAR', match_score: 95, match_method: 'MEMBER_ID', needs_review: false },
+        { claim_name: 'RAJESH KUMAR', claim_employee_no: '4004', matched_enrollment: 'RAJESH KUMAR', match_score: 85, match_method: 'FUZZY', needs_review: false },
+        { claim_name: 'RAVINDRA MEDHE', claim_employee_no: '4040', matched_enrollment: '', match_score: 55, match_method: 'NO_MATCH', needs_review: true },
+      ]
+    };
+    setCache(caseId, 'matchResults', matches);
+    return { status: 'complete', summary: matches.summary };
   },
+  getMappingResults: async (caseId) => {
+    const cache = getCache(caseId);
+    const matches = cache?.matchResults || {
+      match_results: [
+        { claim_id: 'C001', claimant_name: 'ANJU M', matched_enrollment_id: 'E001', matched_name: 'ANJU M', confidence: 100, match_method: 'EXACT' },
+        { claim_id: 'C002', claimant_name: 'BALAJI S', matched_enrollment_id: 'E002', matched_name: 'BALAJI S', confidence: 100, match_method: 'EXACT' },
+        { claim_id: 'C003', claimant_name: 'DIVYA K', matched_enrollment_id: 'E003', matched_name: 'DIVYA K', confidence: 100, match_method: 'EXACT' },
+        { claim_id: 'C004', claimant_name: 'PREM SHANKAR', matched_enrollment_id: 'E004', matched_name: 'PREM SHANKAR', confidence: 95, match_method: 'MEMBER_ID' },
+        { claim_id: 'C005', claimant_name: 'RAJESH KUMAR', matched_enrollment_id: 'E005', matched_name: 'RAJESH KUMAR', confidence: 85, match_method: 'FUZZY' },
+        { claim_id: 'C006', claimant_name: 'RAVINDRA MEDHE', matched_enrollment_id: null, matched_name: null, confidence: 55, match_method: 'NO_MATCH' },
+      ],
+      matched_count: 5,
+      unmatched_count: 1,
+      match_rate: '83.3%'
+    };
+    return {
+      status: 'complete',
+      summary: {
+        total_claims: 6,
+        total_records: 6,
+        matched_count: matches.matched_count,
+        unmatched_count: matches.unmatched_count,
+        match_rate: matches.match_rate,
+        avg_confidence: 89,
+        total_sum_insured: 50000000
+      },
+      field_mapping: {
+        enrollment: [
+          { source_field: 'employee_id', mapped_field: 'Employee ID', confidence: 100 },
+          { source_field: 'member_name', mapped_field: 'Name', confidence: 98 },
+          { source_field: 'dob', mapped_field: 'Date of Birth', confidence: 100 },
+          { source_field: 'sum_insured', mapped_field: 'Sum Insured', confidence: 100 },
+          { source_field: 'gender', mapped_field: 'Gender', confidence: 100 },
+          { source_field: 'email', mapped_field: 'Email', confidence: 95 },
+          { source_field: 'phone', mapped_field: 'Phone', confidence: 95 },
+          { source_field: 'department', mapped_field: 'Department', confidence: 72 },
+        ]
+      },
+      matched_records: [
+        { member_name: 'ANJU M', enrollment_id: 'E001', dob: '1985-03-15', claims_count: 2, confidence: 100, method: 'EXACT' },
+        { member_name: 'BALAJI S', enrollment_id: 'E002', dob: '1978-07-22', claims_count: 1, confidence: 100, method: 'EXACT' },
+        { member_name: 'DIVYA K', enrollment_id: 'E003', dob: '1990-11-08', claims_count: 1, confidence: 100, method: 'EXACT' },
+        { member_name: 'PREM SHANKAR', enrollment_id: 'E004', dob: '1982-05-30', claims_count: 3, confidence: 95, method: 'MEMBER_ID' },
+        { member_name: 'RAJESH KUMAR', enrollment_id: 'E005', dob: '1975-12-03', claims_count: 2, confidence: 85, method: 'FUZZY' },
+        { member_name: 'RAVINDRA MEDHE', enrollment_id: null, dob: '1988-09-14', claims_count: 1, confidence: 55, method: 'NO_MATCH' },
+      ],
+      unmatched_records: [
+        { claim_id: 'C006', claimant_name: 'RAVINDRA MEDHE', amount: 150000, suggested_match: null },
+      ]
+    };
+  },
+  exportMappedData: async (caseId) => {
+    const csv = 'Member Name,Enrollment ID,DOB,Claims Count,Confidence,Method,Sum Insured\n' +
+      'ANJU M,E001,1985-03-15,2,100%,EXACT,10000000\n' +
+      'BALAJI S,E002,1978-07-22,1,100%,EXACT,8000000\n' +
+      'DIVYA K,E003,1990-11-08,1,100%,EXACT,12000000\n' +
+      'PREM SHANKAR,E004,1982-05-30,3,95%,MEMBER_ID,10000000\n' +
+      'RAJESH KUMAR,E005,1975-12-03,2,85%,FUZZY,10000000\n';
+    return new Blob([csv], { type: 'text/csv' });
+  },},
 
   // Dashboard - with analytics
   dashboard: {
@@ -741,6 +819,7 @@ export const mockApi = {
       await delay(1500);
       // Simulate realistic matching results
       return {
+        total_claims: result.matches?.length || 0,
         summary: {
           total_claims: 31,
           matched_count: 24,
@@ -786,6 +865,7 @@ export const mockApi = {
       await delay(500);
       // Return cached results from mock runMatch
       return {
+        total_claims: result.matches?.length || 0,
         summary: {
           total_claims: 31,
           matched_count: 24,

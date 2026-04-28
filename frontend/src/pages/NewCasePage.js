@@ -222,10 +222,9 @@ export default function NewCasePage() {
       const { data } = await casesApi.create(payload);
       console.log('Case created response:', data);
       const newCaseId = data.id || data.case_id;
-      alert(`Created case with id: ${newCaseId}, full data: ${JSON.stringify(data)}`);
       setCaseId(newCaseId);
       setStep(2);
-      toast.success('Case created successfully');
+      toast.success('Case created successfully.');
     } catch (error) {
       console.error('Create case error:', error);
       alert(`Error: ${error.message}`);
@@ -278,7 +277,7 @@ export default function NewCasePage() {
       toast.error('Please upload required files first');
       return;
     }
-    navigate(`/cases/${caseId}/mapping`);
+    navigate(`/cases/${caseId}/mapping`, { state: { fromUpload: true } });
   };
 
   const allUploaded = enrollmentResult && (!isRenewal || claimsResult);
@@ -675,18 +674,13 @@ export default function NewCasePage() {
                   </div>
                 </div>
 
-                {/* AI Matching Panel */}
-                {caseId && (
-                  <MatchingPanel
-                    caseId={caseId}
-                    enrollmentUploaded={!!enrollmentResult}
-                    claimsUploaded={!!claimsResult}
-                    onMatchComplete={(results) => {
-                      console.log('Matching complete:', results);
-                      // Optionally navigate to AI review page
-                    }}
-                  />
-                )}
+                {/* Files uploaded - ready for AI processing */}
+                {allUploaded && (
+                  <div className="flex items-center gap-2 px-4 py-2.5 bg-emerald-50 rounded-lg text-emerald-700">
+                    <CheckCircle className="w-4 h-4" />
+                    <span className="text-sm font-medium">Files uploaded successfully</span>
+                  </div>
+                )}}
 
                 {/* Template Download */}
                 <div className="flex items-center gap-3 p-3 bg-zinc-50 rounded-lg">
