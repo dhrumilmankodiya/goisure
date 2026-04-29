@@ -267,39 +267,41 @@ export default function AIInsightsPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Employee ID</th>
                       <th>Name</th>
+                      <th>Age</th>
                       <th>Gender</th>
-                      <th>Department</th>
+                      <th>Relationship</th>
                       <th>Sum Insured</th>
-                      <th>Claims</th>
-                      <th>Total Amount</th>
-                      <th>Risk Flags</th>
+                      <th>Claim Count</th>
+                      <th>Total Claimed</th>
+                      <th>Total Approved</th>
+                      <th>Claim Status</th>
+                      <th>Diagnosis 1</th>
+                      <th>Diagnosis 2</th>
+                      <th>Hospital</th>
+                      <th>Has Claims</th>
                     </tr>
                   </thead>
                   <tbody>
                     {structuredData.slice(0, 20).map((row, idx) => (
                       <tr key={idx}>
-                        <td className="font-mono text-xs">{row.employee_id || '-'}</td>
-                        <td>{row.name || '-'}</td>
-                        <td className="capitalize">{row.gender || '-'}</td>
-                        <td>{row.department || '-'}</td>
-                        <td>{row.sum_insured ? formatCurrency(row.sum_insured) : '-'}</td>
-                        <td>{row.claims_count || 0}</td>
-                        <td>{row.total_claims ? formatCurrency(row.total_claims) : '-'}</td>
+                        <td>{row.Name || '-'}</td>
+                        <td>{row.Age || 0}</td>
+                        <td className="capitalize">{row.Gender || '-'}</td>
+                        <td>{row.Relationship || 'SELF'}</td>
+                        <td>{row.Sum_Insured ? formatCurrency(row.Sum_Insured) : '-'}</td>
+                        <td>{row.Claim_Count || 0}</td>
+                        <td>{row.Total_Claimed ? formatCurrency(row.Total_Claimed) : '-'}</td>
+                        <td>{row.Total_Approved ? formatCurrency(row.Total_Approved) : '-'}</td>
                         <td>
-                          {row.risk_flags && row.risk_flags.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {row.risk_flags.map((flag, fidx) => (
-                                <Badge key={fidx} variant="outline" className="text-xs border-red-200 bg-red-50 text-red-700">
-                                  {flag}
-                                </Badge>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-zinc-400">-</span>
-                          )}
+                          <Badge variant={row.Claim_Status === 'Paid' ? 'default' : 'outline'} className={row.Claim_Status === 'Paid' ? 'bg-green-100 text-green-800' : ''}>
+                            {row.Claim_Status || '-'}
+                          </Badge>
                         </td>
+                        <td>{row.Diagnosis_1 || '-'}</td>
+                        <td>{row.Diagnosis_2 || '-'}</td>
+                        <td>{row.Hospital_1 || '-'}</td>
+                        <td>{row.Has_Claims ? '✓' : '-'}</td>
                       </tr>
                     ))}
                   </tbody>
