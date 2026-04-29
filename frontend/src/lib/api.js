@@ -197,6 +197,10 @@ export const matchingApi = {
     if (isMockMode()) return { data: await mockApi.matching.runMatch(caseId) };
     return api.post(`/cases/${caseId}/match-ai`);
   },
+  processAI: async (caseId) => {
+    if (isMockMode()) return { data: { success: true, key_stats: { total_enrolled: 100, total_claims: 50, total_claimed: 500000 }, ai_insights: [{ type: 'risk', title: 'High Claims', description: 'Test insight', severity: 'medium' }], structured_data: [], total_records: 100 } };
+    return api.post(`/cases/${caseId}/process-ai`);
+  },
   getResults: async (caseId) => {
     if (isMockMode()) return { data: await mockApi.matching.getResults(caseId) };
     return api.get(`/cases/${caseId}/match-results`);

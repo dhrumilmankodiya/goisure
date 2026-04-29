@@ -277,7 +277,8 @@ export default function NewCasePage() {
       toast.error('Please upload required files first');
       return;
     }
-    navigate(`/cases/${caseId}/mapping`, { state: { fromUpload: true } });
+    // New flow: Go to AI processing page
+    navigate(`/cases/${caseId}/processing`);
   };
 
   const allUploaded = enrollmentResult && (!isRenewal || claimsResult);
@@ -701,7 +702,7 @@ export default function NewCasePage() {
                   className="w-full bg-[#0055FF] hover:bg-[#0040CC]"
                   data-testid="proceed-to-mapping-button"
                 >
-                  Proceed to Mapping & Pricing
+                  Process with AI
                   <ArrowRight className="w-4 h-4 ml-2" />
                 </Button>
               </CardContent>

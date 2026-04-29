@@ -202,7 +202,7 @@ api_router = APIRouter(prefix="/api")
 # and other common deployment platforms with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|http://localhost:\d+|http://null|http://43\.153\.173\.156|https://43\.153\.173\.156",
+    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|https://goisure-dhrumil\.loca\.lt|https://goisure-new\.loca\.lt|http://localhost:\d+|http://null|http://43\.153\.173\.156|https://43\.153\.173\.156",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1243,7 +1243,7 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
                                 "X-Title": "Goisure"
                             },
                             json={
-                                "model": "google/gemma-4-26b-a4b-it",
+                                "model": "google/gemma-4-26b-a4b-it:free",
                                 "messages": [
                                     {"role": "system", "content": "You are a name matching expert. Match employee names accurately."},
                                     {"role": "user", "content": f"Find if these names refer to the same person:\nClaimant: {claim_name}\nEnrollment candidates: {', '.join([str(e.get('Name') or e.get('name') or e.get('Employee Name') or 'UNKNOWN') for e in enrollment_data[:20]])}\nAnswer with the best matching name or 'NO_MATCH'."}
@@ -1386,6 +1386,277 @@ async def get_analytics(case_id: str, request: Request = None):
     
     return analytics
 
+# ==================== AI PROCESSING (Gemma 4) ====================
+@api_router.post("/cases/{case_id}/process-ai")
+async def process_ai(case_id: str, request: Request = None):
+    """Process enrollment and claims data with Gemma 4 AI to merge and generate insights"""
+    import aiohttp
+    import json
+    
+    user = await get_current_user(request)
+    
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    # Admins can access any case; agents only their own
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    enrollment_data = case.get("mapped_data") or case.get("raw_data", [])
+    claims_data = case.get("claims_data", [])
+    
+    if not enrollment_data:
+        raise HTTPException(status_code=400, detail="No enrollment data found")
+    
+    if not claims_data:
+        raise HTTPException(status_code=400, detail="No claims data found")
+    
+    # Sample data for AI processing (limit to avoid token limits)
+    enrollment_sample = enrollment_data[:50]
+    claims_sample = claims_data[:100]
+    
+    # Try AI-powered processing with Gemma 4
+    ai_insights = []
+    structured_data = []
+    
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    
+    # Skip AI if no key - use basic processing only
+    if not api_key:
+        logger.warning("No OpenRouter API key - using basic merge only")
+        # Go directly to basic merge below
+    elif api_key:
+        # Only dump JSON if we have a key
+        enrollment_json = json.dumps(enrollment_sample, default=str)
+        claims_json = json.dumps(claims_sample, default=str)
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Build prompt for Gemma 4
+                system_prompt = """You are an expert insurance data analyst. Your task is to:
+1. Merge enrollment and claims data at the user/member level
+2. Generate actionable AI insights for underwriters
+3. Identify patterns, risks, and anomalies in the data
+
+Analyze the provided enrollment and claims data and respond with a JSON object containing:
+- "insights": Array of insight objects with "type" (risk/opportunity/pattern), "title", "description", "severity" (high/medium/low)
+- "structured_data": Array of merged records at member level with fields: employee_id, name, gender, age, department, sum_insured, claims_count, total_claims, claims_breakdown, risk_flags
+- "summary": Object with key metrics
+
+Respond ONLY with valid JSON, no other text."""
+
+                user_prompt = f"""Enrollment data (first 50 records):
+{enrollment_json}
+
+Claims data (first 100 records):
+{claims_json}
+
+Total enrollment count: {total_enrolled}
+Total claims count: {total_claims}
+Total claimed amount: ₹{total_claimed:,.2f}
+
+Generate the merged data and AI insights.respond with JSON only."""
+
+                async with session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://goisure.com",
+                        "X-Title": "Goisure AI Processing"
+                    },
+                    json={
+                        "model": "google/gemma-4-26b-a4b-it:free",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 8000
+                    },
+                    timeout=aiohttp.ClientTimeout(total=180)
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                        
+                        # Try to parse JSON from response
+                        try:
+                            # Find JSON in response
+                            json_start = content.find('{')
+                            json_end = content.rfind('}') + 1
+                            if json_start >= 0 and json_end > json_start:
+                                ai_result = json.loads(content[json_start:json_end])
+                                ai_insights = ai_result.get("insights", [])
+                                structured_data = ai_result.get("structured_data", [])
+                        except json.JSONDecodeError:
+                            logger.warning("Failed to parse AI JSON response")
+                    else:
+                        logger.warning(f"Gemma 4 API returned status {resp.status}")
+        except Exception as e:
+            logger.warning(f"AI processing failed: {e}")
+    
+    # Fallback: Basic merging if AI didn't work
+    if not structured_data:
+        # Calculate stats first
+        total_enrolled = len(enrollment_data)
+        total_claims = len(claims_data)
+        
+        # Calculate claims amounts (from approved field)
+        claims_amounts = []
+        for c in claims_data:
+            # Check multiple possible field names for approved amount
+            amt = (c.get("TOTAL_AMOUNT_APPROVED") or 
+                   c.get("Net_Amount_paid_Including_GST_After_TDS") or
+                   c.get("total_amount_approved") or
+                   c.get("amount") or
+                   c.get("Amount") or
+                   c.get("claimed_amount") or
+                   c.get("Claimed_Amount") or
+                   c.get("Total_Amount_Claimed") or
+                   c.get("AMOUNT_CLAIMED_AL_REQUESTED  ") or
+                   0)
+            try:
+                claims_amounts.append(float(amt) if amt else 0)
+            except:
+                claims_amounts.append(0)
+        total_claimed = sum(claims_amounts)
+        
+        # Build name lookup for enrollment (no emp_id available)
+        enrollment_by_name = {}
+        for e in enrollment_data:
+            name = str(e.get("Name") or "").strip().upper()
+            if name and len(name) > 2:  # Ignore short names
+                enrollment_by_name[name] = e
+        
+        # Also try partial name matching
+        def find_enrollment_by_name(claim_name):
+            claim_name = str(claim_name or "").strip().upper()
+            # Exact match
+            if claim_name in enrollment_by_name:
+                return enrollment_by_name[claim_name], "exact"
+            # Partial match - claim name contains enrollment name or vice versa
+            for en_name, en_data in enrollment_by_name.items():
+                if len(en_name) > 3 and len(claim_name) > 3:
+                    if en_name in claim_name or claim_name in en_name:
+                        return en_data, "partial"
+            return None, "none"
+        
+        # Merge claims with enrollment by name
+        member_claims = {}
+        matched_count = 0
+        for c in claims_data:
+            patient_name = c.get("Patient_name") or c.get("PATIENT_NAME") or c.get("patient_name")
+            matched_enrollment, match_type = find_enrollment_by_name(patient_name)
+            
+            if matched_enrollment:
+                matched_count += 1
+                name = str(patient_name).strip().upper()
+                if name not in member_claims:
+                    member_claims[name] = []
+                member_claims[name].append(c)
+        
+        logger.info(f"Matched {matched_count}/{len(claims_data)} claims by name")
+        
+        # Build structured data with name matching
+        for e in enrollment_data:
+            name = str(e.get("Name") or "").strip().upper()
+            
+            # Get claims by name (exact or partial match)
+            claims_for_member = []
+            if name in member_claims:
+                claims_for_member = member_claims[name]
+            else:
+                # Try partial match
+                for claim_name, claims in member_claims.items():
+                    if len(name) > 3 and len(claim_name) > 3:
+                        if name in claim_name or claim_name in name:
+                            claims_for_member = claims
+                            break
+            
+            claim_count = len(claims_for_member)
+            # Sum approved amounts - check multiple possible field names
+            total_claim_amt = 0
+            for c in claims_for_member:
+                amt = c.get("TOTAL_AMOUNT_APPROVED") or c.get("total_amount_approved") or c.get("AMOUNT_APPROVED") or c.get("Net_Amount_paid_Including_GST_After_TDS") or c.get("amount") or 0
+                try:
+                    total_claim_amt += float(amt) if amt else 0
+                except:
+                    pass
+            
+            # Determine risk flags
+            risk_flags = []
+            if claim_count > 5:
+                risk_flags.append("High claim frequency")
+            if total_claim_amt > 500000:
+                risk_flags.append("High claim amount")
+            
+            structured_data.append({
+                "employee_id": e.get("employee_id") or e.get("emp_id") or e.get("EMP ID") or e.get("member_id") or "",
+                "name": e.get("Name") or e.get("name") or e.get("Employee Name") or "",
+                "gender": e.get("Gender") or e.get("gender") or "",
+                "department": e.get("department") or e.get("Department") or "",
+                "sum_insured": e.get("Sum Insured") or e.get("sum_insured") or 0,
+                "claims_count": claim_count,
+                "total_claims": round(total_claim_amt, 2),
+                "risk_flags": risk_flags
+            })
+        
+        # Basic insights
+        ai_insights = [
+            {
+                "type": "pattern",
+                "title": "Data Processing Complete",
+                "description": f"Merged {len(enrollment_data)} enrollment records with {len(claims_data)} claims records",
+                "severity": "low"
+            }
+        ]
+        
+        if total_claimed > 1000000:
+            ai_insights.append({
+                "type": "risk",
+                "title": "High Total Claims Detected",
+                "description": f"Total claimed amount is ₹{total_claimed:,.2f} - review for potential premium adjustment",
+                "severity": "high"
+            })
+    
+    # Generate key stats
+    key_stats = {
+        "total_enrolled": total_enrolled,
+        "total_claims": total_claims,
+        "total_claimed": total_claimed,
+        "avg_claims_per_member": round(total_claims / total_enrolled, 2) if total_enrolled else 0,
+        "claims_with_enrollment": len(structured_data),
+        "high_risk_members": len([s for s in structured_data if s.get("risk_flags")])
+    }
+    
+    # Update case with structured data
+    await db.cases.update_one(
+        {"case_id": case_id},
+        {"$set": {
+            "structured_data": structured_data,
+            "ai_insights": ai_insights,
+            "key_stats": key_stats,
+            "status": "ai_processed",
+            "processed_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    await log_audit("ai_processing_completed", user["id"], {
+        "case_id": case_id,
+        "enrollment_count": total_enrolled,
+        "claims_count": total_claims,
+        "structured_records": len(structured_data)
+    })
+    
+    return {
+        "success": True,
+        "key_stats": key_stats,
+        "ai_insights": ai_insights,
+        "structured_data": structured_data[:100],  # Return first 100 for preview
+        "total_records": len(structured_data)
+    }
+
 async def get_ai_mapping_suggestions(columns: List[str], sample_data: List[Dict]) -> List[Dict]:
     """Use OpenRouter (Gemma 4) to suggest column mappings"""
     import aiohttp
@@ -1430,7 +1701,7 @@ Return ONLY valid JSON, no other text."""
                     "X-Title": "Goisure"
                 },
                 json={
-                    "model": "google/gemma-4-26b-a4b-it",
+                    "model": "google/gemma-4-26b-a4b-it:free",
                     "messages": [
                         {"role": "system", "content": "You are a data mapping expert for insurance GMC files. Map source columns to standard fields accurately."},
                         {"role": "user", "content": prompt}

@@ -16,6 +16,8 @@ import MappingReviewPage from "./pages/MappingReviewPage";
 import DataCorrectionPage from "./pages/DataCorrectionPage";
 import StructuredReviewPage from "./pages/StructuredReviewPage";
 import AIMatchReviewPage from "./pages/AIMatchReviewPage";
+import AIProcessingPage from "./pages/AIProcessingPage";
+import AIInsightsPage from "./pages/AIInsightsPage";
 import UnderwriterQueuePage from "./pages/UnderwriterQueuePage";
 import UnderwriterReviewPage from "./pages/UnderwriterReviewPage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
@@ -85,6 +87,8 @@ function AppRoutes() {
       <Route path="/cases/:caseId/mapping" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><MappingReviewPage /></ProtectedRoute>} />
       <Route path="/cases/:caseId/correction" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><DataCorrectionPage /></ProtectedRoute>} />
       <Route path="/cases/:caseId/review" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><StructuredReviewPage /></ProtectedRoute>} />
+      <Route path="/cases/:caseId/processing" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><AIProcessingPage /></ProtectedRoute>} />
+      <Route path="/cases/:caseId/insights" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><AIInsightsPage /></ProtectedRoute>} />
       <Route path="/cases/:caseId/ai-review" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><AIMatchReviewPage /></ProtectedRoute>} />
 
       {/* Underwriter Routes */}
