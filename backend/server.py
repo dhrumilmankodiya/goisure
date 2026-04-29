@@ -1591,15 +1591,39 @@ Generate the merged data and AI insights.respond with JSON only."""
             if total_claim_amt > 500000:
                 risk_flags.append("High claim amount")
             
+            # Extract claim details for structured output
+            diagnosis_1 = ""
+            diagnosis_2 = ""
+            hospital_1 = ""
+            claim_status = ""
+            total_approved = 0
+            if claims_for_member:
+                first_claim = claims_for_member[0]
+                diagnosis_1 = first_claim.get("ICD_CODE_LEVEL_1_DESCRIPTION") or first_claim.get("ICD_CODE_1") or ""
+                diagnosis_2 = first_claim.get("ICD_CODE_LEVEL_2_DESCRIPTION") or first_claim.get("ICD_CODE_2") or ""
+                hospital_1 = first_claim.get("HOSPITAL_NAME") or first_claim.get("Hospital") or ""
+                claim_status = first_claim.get("CLAIM_STATUS") or first_claim.get("Claim_Status") or first_claim.get("Workflow_Sequence") or ""
+                total_approved = first_claim.get("TOTAL_AMOUNT_APPROVED") or first_claim.get("Net_Amount_paid_Including_GST_After_TDS") or 0
+                try:
+                    total_approved = float(total_approved) if total_approved else 0
+                except:
+                    total_approved = 0
+            
+            # Match Notion DB fields exactly
             structured_data.append({
-                "employee_id": e.get("employee_id") or e.get("emp_id") or e.get("EMP ID") or e.get("member_id") or "",
-                "name": e.get("Name") or e.get("name") or e.get("Employee Name") or "",
-                "gender": e.get("Gender") or e.get("gender") or "",
-                "department": e.get("department") or e.get("Department") or "",
-                "sum_insured": e.get("Sum Insured") or e.get("sum_insured") or 0,
-                "claims_count": claim_count,
-                "total_claims": round(total_claim_amt, 2),
-                "risk_flags": risk_flags
+                "Name": e.get("Name") or e.get("name") or "",
+                "Age": e.get("Age") or e.get("age") or 0,
+                "Gender": e.get("Gender") or e.get("gender") or "",
+                "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
+                "Sum_Insured": e.get("Sum Insured") or e.get("sum_insured") or 0,
+                "Claim_Count": claim_count,
+                "Total_Claimed": round(total_claim_amt, 2),
+                "Total_Approved": round(total_approved, 2),
+                "Claim_Status": claim_status,
+                "Diagnosis_1": diagnosis_1,
+                "Diagnosis_2": diagnosis_2,
+                "Hospital_1": hospital_1,
+                "Has_Claims": claim_count > 0
             })
         
         # Basic insights

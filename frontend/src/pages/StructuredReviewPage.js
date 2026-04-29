@@ -95,7 +95,11 @@ export default function StructuredReviewPage() {
 
   const tableData = caseData?.corrected_data || caseData?.mapped_data || [];
   const aiConfidence = caseData?.ai_confidence || 0;
-  const columns = tableData.length > 0 ? Object.keys(tableData[0]).filter(k => !k.startsWith('_')) : [];
+  const columns = [
+    "Name", "Age", "Gender", "Relationship", "Sum_Insured", 
+    "Claim_Count", "Total_Claimed", "Total_Approved", "Claim_Status",
+    "Diagnosis_1", "Diagnosis_2", "Hospital_1", "Has_Claims"
+  ];
 
   return (
     <Layout>
@@ -233,7 +237,7 @@ export default function StructuredReviewPage() {
                 <table className="data-table min-w-full">
                   <thead>
                     <tr>
-                      {columns.slice(0, 8).map(col => (
+                      {columns.slice(0, 13).map(col => (
                         <th key={col}>{col.replace(/_/g, ' ')}</th>
                       ))}
                     </tr>
@@ -241,7 +245,7 @@ export default function StructuredReviewPage() {
                   <tbody>
                     {tableData.slice(0, 20).map((row, idx) => (
                       <tr key={idx}>
-                        {columns.slice(0, 8).map(col => (
+                        {columns.slice(0, 13).map(col => (
                           <td key={col}>{String(row[col] || '-')}</td>
                         ))}
                       </tr>
