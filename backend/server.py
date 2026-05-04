@@ -6,6 +6,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import traceback
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
@@ -202,7 +203,7 @@ api_router = APIRouter(prefix="/api")
 # and other common deployment platforms with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|https://goisure-dhrumil\.loca\.lt|https://goisure-new\.loca\.lt|http://localhost:\d+|http://null|http://43\.153\.173\.156|https://43\.153\.173\.156",
+    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app|https://vercel\.app|https://[a-zA-Z0-9-]+\.netlify\.app|https://[a-zA-Z0-9-]+\.trycloudflare\.com|https://[a-zA-Z0-9-]+\.loca\.lt|https://goisure-dhrumil\.loca\.lt|https://goisure-new\.loca\.lt|http://localhost:\d+|http://null|http://43\.153\.173\.156(:\d+)?|https://43\.153\.173\.156(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -258,6 +259,7 @@ async def login(data: UserLogin, response: Response, request: Request):
             raise HTTPException(status_code=429, detail="Account temporarily locked. Try again later.")
     
     user = await db.users.find_one({"email": email})
+    logger.warning(f"[LOGIN DEBUG] email={email}, user_found={user is not None}, stored_hash={user.get('password_hash')[:20] if user and user.get('password_hash') else 'MISSING'}")
     if not user or not verify_password(data.password, user["password_hash"]):
         # Increment failed attempts
         await db.login_attempts.update_one(
@@ -1139,9 +1141,12 @@ async def run_ai_matching(case_id: str, request: Request = None):
             # Try to get name from matched enrollment data
             matched_data = r.get("matched_enrollment_data", {})
             enrollment = matched_data.get("Name") or matched_data.get("name") or matched_data.get("Employee Name") or str(r.get("matched_enrollment_id", ""))
+        claim_employee_no = (claim.get("EMPLOYEE_NO") or claim.get("employee_no") or
+                             claim.get("emp_id") or claim.get("employee_id") or
+                             claim.get("Employee_id") or claim.get("EMP ID") or "")
         formatted_matches.append({
             "claim_name": claim_name_raw,
-            "claim_employee_no": claim.get("employee_id") or claim.get("emp_id") or claim.get("Employee_id") or "",
+            "claim_employee_no": claim_employee_no,
             "matched_enrollment": enrollment,
             "match_score": r.get("confidence", 0),
             "match_method": r.get("match_method", "NO_MATCH"),
@@ -1159,77 +1164,357 @@ async def run_ai_matching(case_id: str, request: Request = None):
         "matches": formatted_matches
     }
 
-async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dict]) -> List[Dict]:
-    """Perform AI matching between enrollment and claims"""
-    import aiohttp
+def get_diagnosis_fields(claim: Dict) -> tuple:
+    """Extract diagnosis fields from claim — handles ALL common column naming conventions."""
+    diag1_keys = [
+        "Diagnosis", "DIAGNOSIS", "DIAGNOSIS_1", "Diagnosis_1",
+        "PRIMARY_DIAGNOSIS", "Primary_Diagnosis", "Primary Diagnosis",
+        "ICD_CODE_LEVEL_1_DESCRIPTION", "ICD_CODE_LEVEL_1",
+        "ICD_CODE", "Icd_Code", "diagnosis_code", "DIAGNOSIS_CODE", "Diagnosis_Code",
+        "ICD_DESCRIPTION", "Ailment", "AILMENT",
+        "Diagnosis Description", "Diagnosis_Description", "DIAGNOSIS_DESCRIPTION",
+        "PROVIDER_DIAGNOSIS_CODE", "Diagnosis_1_Description",
+        "Primary_Diagnosis_Description", "DIAGNOSIS_PRIMARY"
+    ]
+    diag2_keys = [
+        "DIAGNOSIS_2", "Diagnosis_2", "Secondary_Diagnosis", "SECONDARY_DIAGNOSIS",
+        "Secondary Diagnosis", "SECONDARY DIAGNOSIS", "Co_Diagnosis",
+        "ICD_CODE_LEVEL_2_DESCRIPTION", "ICD_CODE_LEVEL_2",
+        "Additional_Diagnosis", "ADDITIONAL_DIAGNOSIS",
+        "Diagnosis_2_Description", "Secondary_Diagnosis_Description"
+    ]
     
-    # Build enrollment lookup by various fields (support real column names: Name, name, Employee Name etc.)
-    enrollment_lookup = {}
-    enrollment_names_all = {}  # name -> (index, data) for fuzzy matching
+    diagnosis_1 = next((claim.get(k) for k in diag1_keys if claim.get(k)), "")
+    diagnosis_2 = next((claim.get(k) for k in diag2_keys if claim.get(k)), "")
+    
+    # Normalize: strip, title case, truncate
+    def clean(d):
+        if not d: return ""
+        return str(d).strip()[:80]
+    
+    return clean(diagnosis_1), clean(diagnosis_2)
+
+
+def get_claim_status(claim: Dict) -> str:
+    """Extract claim status from any column naming convention."""
+    status_keys = [
+        "CLAIM_STATUS", "Claim_Status", "Claim Status", "claim_status",
+        "STATUS", "Status", "Claim Status", "Workflow_Sequence",
+        "Claim_Status_New", "claim_status_new", "Final_Status", "FINAL_STATUS",
+        "Approval_Status", "APPROVAL_STATUS", "Claim_Stage"
+    ]
+    for key in status_keys:
+        val = claim.get(key)
+        if val:
+            s = str(val).strip().lower()
+            if s in ["approved", "paid", "settled", "discharged"]:
+                return "Paid"
+            if s in ["rejected", "denied", "declined", "rejection"]:
+                return "Rejected"
+            if s in ["pending", "processing", "in-progress", "under review", "submitted"]:
+                return "Pending"
+            return str(val).strip()[:30]
+    return ""
+
+
+def get_hospital(claim: Dict) -> str:
+    """Extract hospital name from any column naming convention."""
+    hosp_keys = [
+        "HOSPITAL_NAME", "Hospital_Name", "Hospital", "HOSPITAL",
+        "Provider_Name", "PROVIDER_NAME", "provider_name",
+        "Network_Hospital", "NETWORK_HOSPITAL", "hospital_name",
+        "Claimed_From", "Insurer_Network_Hospital", "Hospital_Name_1"
+    ]
+    for key in hosp_keys:
+        val = claim.get(key)
+        if val:
+            return str(val).strip()[:60]
+    return ""
+
+
+def get_claim_amount(claim: Dict) -> float:
+    """Extract claimed/approved amount from any column naming convention."""
+    amt_keys = [
+        "Amount_Claimed", "amount_claimed",
+        "Claimed_Amount", "CLAIMED_AMOUNT", "claimed_amount",
+        "Claim_Amount", "CLAIM_AMOUNT", "claim_amount",
+        "Billed_Amount", "BILLING_AMOUNT", "billed_amount",
+        "Gross_Amount", "GROSS_AMOUNT", "gross_amount",
+        "TOTAL_AMOUNT_APPROVED", "total_amount_approved",
+        "Approved_Amount", "APPROVED_AMOUNT", "approved_amount",
+        "Net_Amount_Paid", "Net_Amount_Paid_Including_GST_After_TDS",
+        "Net_Amount", "Amount_Paid", "Claim_Paid", "Settled_Amount",
+        "Discharge_Amount", "Total_Amount_Claimed"
+    ]
+    for key in amt_keys:
+        val = claim.get(key)
+        if val is not None:
+            try:
+                return float(str(val).replace(",", "").replace("₹", "").replace("Rs", "").strip())
+            except:
+                pass
+    return 0.0
+
+
+def get_pre_existing_conditions(enrollment: Dict) -> str:
+    """Extract pre-existing conditions from enrollment data."""
+    pec_keys = [
+        "Pre_Existing_Conditions", "PRE_EXISTING_CONDITIONS", "Pre_Existing_Condition",
+        "Pre_Existing", "Preexisting", "PREEXISTING", "Pre_Existing_Diseases",
+        "Chronic_Diseases", "CHRONIC_DISEASES", "Existing_Medical_Conditions",
+        "Medical_History", "Pre_Existing_Illness", "Pre_Existing_Ailment",
+        "Declared_Illness", "Health_Conditions"
+    ]
+    for key in pec_keys:
+        val = enrollment.get(key)
+        if val:
+            return str(val).strip()
+    return ""
+
+
+def is_chronic(condition: str) -> bool:
+    """Check if a condition is chronic (affects premium loading)."""
+    if not condition: return False
+    c = str(condition).lower()
+    chronic_list = [
+        "diabetes", "hypertension", "bp", "high blood pressure", "htn",
+        "asthma", "copd", "cancer", "tumor", "cardiac", "heart disease",
+        "kidney", "renal", "liver", "hepatic", "stroke", "epilepsy",
+        "psychiatric", "mental", "hiv", "aids", "tb", "tuberculosis",
+        "thyroid", "hypothyroid", "hyperthyroid", "obesity", "bariatric",
+        "sclerosis", "lupus", "arthritis", "autoimmune"
+    ]
+    return any(chronic in c for chronic in chronic_list)
+
+
+def get_age_band(age: int) -> str:
+    if not age or age < 18: return "Unknown"
+    if age < 26: return "18-25"
+    if age < 36: return "26-35"
+    if age < 46: return "36-45"
+    if age < 56: return "46-55"
+    return "55+"
+
+
+async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dict]) -> List[Dict]:
+    """Perform AI matching between enrollment and claims with intelligent name matching."""
+    import aiohttp
+    from difflib import SequenceMatcher
+
+    # ─── Normalise a string for matching ──────────────────────────────────────
+    def norm(s):
+        """Lowercase, strip spaces, collapse multiple spaces."""
+        if not s:
+            return ""
+        import re
+        return re.sub(r'\s+', ' ', str(s).strip()).lower()
+
+    # ─── Get name from any field variant ────────────────────────────────────────
+    def get_name(rec):
+        return (norm(rec.get("Name")) or norm(rec.get("name")) or
+                norm(rec.get("Patient_name")) or norm(rec.get("patient_name")) or
+                norm(rec.get("Employee Name")) or norm(rec.get("employee_name")) or
+                norm(rec.get("member_name")) or norm(rec.get("Member Name")) or
+                norm(rec.get("MemberName")) or norm(rec.get("claimant_name")) or
+                norm(rec.get("Claimant Name")) or norm(rec.get("EmployeeName")) or
+                norm(rec.get("employeeName")) or "")
+
+    def get_emp_id(rec):
+        return (norm(rec.get("Employee_ID")) or norm(rec.get("employee_id")) or
+                norm(rec.get("Employee_Id")) or norm(rec.get("Employee_No")) or
+                norm(rec.get("EmployeeCode")) or norm(rec.get("employee_code")) or
+                norm(rec.get("emp_id")) or norm(rec.get("EMP ID")) or
+                norm(rec.get("EMPLOYEE_NO")) or norm(rec.get("employee_no")) or
+                norm(rec.get("emp_no")) or norm(rec.get("EMP_NO")) or
+                norm(rec.get("EmpID")) or norm(rec.get("emp_id")) or "")
+
+    def get_member_id(rec):
+        return (norm(rec.get("member_id")) or norm(rec.get("Member_id")) or
+                norm(rec.get("Member ID")) or norm(rec.get("id")) or "")
+
+    # ─── Build enrollment lookups ───────────────────────────────────────────────
+    enrollment_lookup = {}   # normalised_id -> (index, data, match_type)
+    enrollment_names_all = {}  # normalised_name -> (index, data)
+    # Extra: last-name -> list of (index, data) for last-name matching
+    last_name_index = {}     # last_word -> [(idx, data), ...]
+    # Extra: first-name -> list of (index, data) for token matching
+    first_name_index = {}    # first_word -> [(idx, data), ...]
+
     for idx, enrol in enumerate(enrollment_data):
-        emp_id = str(enrol.get("employee_id") or enrol.get("emp_id") or enrol.get("Employee_id") or enrol.get("EMP ID") or "").strip().lower()
-        # Support: Name, name, Employee Name, EMPLOYEE NAME
-        name = str(enrol.get("Name") or enrol.get("name") or enrol.get("Employee Name") or enrol.get("employee_name") or enrol.get("member_name") or enrol.get("Member Name") or enrol.get("member_name") or enrol.get("Name ") or "").strip().lower()
-        enrol_id = str(enrol.get("member_id") or enrol.get("Member_id") or enrol.get("Member ID") or enrol.get("id") or "").strip().lower()
+        emp_id  = get_emp_id(enrol)
+        name    = get_name(enrol)
+        mem_id  = get_member_id(enrol)
 
         if emp_id:
-            enrollment_lookup[emp_id] = {"index": idx, "data": enrol, "match_type": "EMPLOYEE_ID"}
+            enrollment_lookup[emp_id] = (idx, enrol, "EMPLOYEE_ID")
+        if mem_id and mem_id != emp_id:
+            enrollment_lookup[f"mid:{mem_id}"] = (idx, enrol, "MEMBER_ID")
         if name:
-            enrollment_lookup[name] = {"index": idx, "data": enrol, "match_type": "EXACT_NAME"}
+            enrollment_lookup[name] = (idx, enrol, "EXACT_NAME")
             enrollment_names_all[name] = (idx, enrol)
-        if enrol_id and enrol_id != emp_id:
-            enrollment_lookup[f"mid:{enrol_id}"] = {"index": idx, "data": enrol, "match_type": "MEMBER_ID"}
-    
+
+            # Index last word (surname)
+            tokens = name.split()
+            if len(tokens) >= 2:
+                last = tokens[-1]
+                if last not in last_name_index:
+                    last_name_index[last] = []
+                last_name_index[last].append((idx, enrol))
+            # Index first word (given name)
+            if tokens:
+                first = tokens[0]
+                if first not in first_name_index:
+                    first_name_index[first] = []
+                first_name_index[first].append((idx, enrol))
+
+    # ─── Scoring helpers ──────────────────────────────────────────────────────
+    def seq_score(a, b):
+        return SequenceMatcher(None, a, b).ratio()
+
+    def smart_match_score(claim_name, enrol_name):
+        """
+        Returns (score 0-1, reason) for claim_name vs enrol_name.
+        Covers: exact, prefix, suffix, token overlap, last-name match.
+        """
+        if not claim_name or not enrol_name:
+            return 0, None
+
+        cn = claim_name.strip()
+        en = enrol_name.strip()
+
+        # 1. Exact match
+        if cn == en:
+            return 1.0, "exact"
+
+        # 2. Prefix: claim is prefix of enrollment or vice versa
+        if en.startswith(cn) or cn.startswith(en):
+            # "AKSHAY KADAM" vs "AKSHAY KADAM (G)"
+            base_len = min(len(cn), len(en))
+            score = seq_score(cn[:base_len], en[:base_len])
+            if score >= 0.90:
+                return score, "prefix"
+
+        # 3. Last-name token match
+        cn_tokens = cn.split()
+        en_tokens = en.split()
+        if len(cn_tokens) >= 1 and len(en_tokens) >= 1:
+            cn_last = cn_tokens[-1]   # KADAM
+            en_last  = en_tokens[-1]    # KADAM
+            cn_first = cn_tokens[0]    # AKSHAY
+            en_first = en_tokens[0]    # AKSHAY
+
+            if cn_last == en_last:
+                if cn_first == en_first:
+                    # "AKSHAY KADAM" vs "AKSHAY KUMAR KADAM" — same first + last
+                    return 0.92, "last_name_exact"
+                else:
+                    # Same surname only — require STRONG first-name similarity
+                    fn_score = SequenceMatcher(None, cn_first, en_first).ratio()
+                    if fn_score >= 0.70:
+                        return 0.82, "last_name_partial"
+                    # DO NOT fall through to fuzzy for surname-only matches —
+                    # "sushma yadav → vishal yadav" and "jaskaran → baskar"
+                    # are too risky; leave them for general fuzzy with its higher threshold
+                    return 0, "surname_only_rejected"
+
+            # First-name match + body similarity
+            if cn_first == en_first:
+                body_score = SequenceMatcher(None, " ".join(cn_t[1:]), " ".join(en_t[1:])).ratio()
+                combined = 0.5 + 0.5 * body_score
+                if combined >= 0.68:
+                    return combined, "first_name_match"
+
+        # General fuzzy — single names need higher threshold to avoid false positives
+        # e.g. "jaskaran" → "baskar" at 71% is NOT a match
+        score = SequenceMatcher(None, cn, en).ratio()
+        is_single_name = len(cn_tokens) <= 1 and len(en_tokens) <= 1
+        min_fuzzy = 0.80 if is_single_name else 0.65
+        if score >= min_fuzzy:
+            return score, "fuzzy"
+        return 0, "too_dissimilar"
+
+    # ─── Main matching loop ────────────────────────────────────────────────────
     results = []
-    
+
     for claim_idx, claim in enumerate(claims_data):
-        # Try to find match
         matched = None
         match_method = "NO_MATCH"
         confidence = 0
-        
-        # Get claim identifiers (support: Patient_name, patient_name, name, Claimant Name, etc.)
-        claim_emp_id = str(claim.get("employee_id") or claim.get("emp_id") or claim.get("Employee_id") or claim.get("EMP ID") or "").strip().lower()
-        claim_name = str(claim.get("Patient_name") or claim.get("patient_name") or claim.get("Name") or claim.get("name") or claim.get("employee_name") or claim.get("member_name") or claim.get("claimant_name") or claim.get("Claimant Name") or "").strip().lower()
-        claim_member_id = str(claim.get("member_id") or claim.get("Member_id") or claim.get("id") or "").strip().lower()
-        claim_amount = claim.get("claim_amount") or claim.get("amount_claimed") or claim.get("amount") or 0
-        
-        # Try exact employee ID match
-        if claim_emp_id and claim_emp_id in enrollment_lookup:
-            matched = enrollment_lookup[claim_emp_id]
-            match_method = matched["match_type"]
-            confidence = 95
-        # Try member ID match
-        elif claim_member_id and f"mid:{claim_member_id}" in enrollment_lookup:
-            matched = enrollment_lookup[f"mid:{claim_member_id}"]
-            match_method = "MEMBER_ID"
-            confidence = 90
-        # Try exact name match
-        elif claim_name and claim_name in enrollment_lookup:
-            matched = enrollment_lookup[claim_name]
+
+        # Get identifiers from claim
+        claim_emp_id = get_emp_id(claim)
+        claim_name     = get_name(claim)
+        claim_mem_id   = get_member_id(claim)
+        claim_amount = (claim.get("Amount_Claimed") or
+                        claim.get("amount_claimed") or
+                        claim.get("claim_amount") or
+                        claim.get("Total_Claimed") or
+                        claim.get("amount") or 0)
+
+        # ── 1. Exact employee ID match (try numeric version too)
+        if claim_emp_id:
+            if claim_emp_id in enrollment_lookup:
+                idx, enrol, mtype = enrollment_lookup[claim_emp_id]
+                matched = (idx, enrol)
+                match_method = mtype
+                confidence = 95
+            else:
+                # Try stripping non-alphanum (handles "ASD C02" vs "ASDC02")
+                import re
+                claim_emp_clean = re.sub(r'[^a-z0-9]', '', claim_emp_id)
+                for key in enrollment_lookup:
+                    clean_key = re.sub(r'[^a-z0-9]', '', key)
+                    if clean_key == claim_emp_clean:
+                        idx, enrol, mtype = enrollment_lookup[key]
+                        matched = (idx, enrol)
+                        match_method = mtype
+                        confidence = 90
+                        break
+
+        # ── 2. Exact member ID match
+        if not matched and claim_mem_id:
+            if f"mid:{claim_mem_id}" in enrollment_lookup:
+                idx, enrol, mtype = enrollment_lookup[f"mid:{claim_mem_id}"]
+                matched = (idx, enrol)
+                match_method = "MEMBER_ID"
+                confidence = 90
+
+        # ── 3. Exact name match
+        if not matched and claim_name and claim_name in enrollment_lookup:
+            idx, enrol, mtype = enrollment_lookup[claim_name]
+            matched = (idx, enrol)
             match_method = "EXACT_NAME"
-            confidence = 85
-        # Try SequenceMatcher-based fuzzy match (instant, no API cost)
-        elif claim_name and len(claim_name) >= 3 and enrollment_names_all:
-            from difflib import SequenceMatcher
-            best_fuzzy = None
-            best_fuzzy_score = 0
+            confidence = 88
+
+        # ── 4. Smart multi-signal fuzzy matching
+        if not matched and claim_name and len(claim_name) >= 3:
+            best = None
+            best_score = 0
+            best_reason = None
+
+            claim_tokens = claim_name.split()
+            claim_last = claim_tokens[-1] if claim_tokens else ""
+            claim_first = claim_tokens[0] if claim_tokens else ""
+
             for enrol_name, (fidx, fdata) in enrollment_names_all.items():
-                # Try both directions
-                score1 = SequenceMatcher(None, claim_name, enrol_name).ratio()
-                # Also try prefix/suffix — handle "BALAJI S" vs "BALAJI" case
-                score2 = SequenceMatcher(None, claim_name, enrol_name[:len(claim_name)] if len(enrol_name) > len(claim_name) else enrol_name).ratio()
-                score3 = SequenceMatcher(None, enrol_name, claim_name[:len(enrol_name)] if len(claim_name) > len(enrol_name) else claim_name).ratio()
-                score = max(score1, score2, score3)
-                if score > best_fuzzy_score and score >= 0.70:
-                    best_fuzzy_score = score
-                    best_fuzzy = (fidx, fdata)
-            if best_fuzzy:
-                matched = {"index": best_fuzzy[0], "data": best_fuzzy[1], "match_type": "FUZZY"}
+                score, reason = smart_match_score(claim_name, enrol_name)
+                if score > best_score:
+                    best_score = score
+                    best = (fidx, fdata)
+                    best_reason = reason
+
+            # Threshold: 60% for general fuzzy, but 70%+ required for weak signals
+            # Strong signals (last_name_exact, prefix) only need 60%
+            strong_signals = {"last_name_exact", "prefix", "first_name_match", "last_name_partial"}
+            min_threshold = 0.60 if best_reason in strong_signals else 0.68
+
+            if best and best_score >= min_threshold:
+                matched = best
                 match_method = "FUZZY"
-                confidence = int(best_fuzzy_score * 100)
-        # Try LLM-based match as last resort
-        elif claim_name:
+                confidence = int(best_score * 100)
+
+        # ── 5. LLM fallback (only if OpenRouter key available)
+        if not matched and claim_name:
             api_key = os.environ.get("OPENROUTER_API_KEY", "")
             if api_key and len(claim_name) >= 3:
                 try:
@@ -1245,38 +1530,50 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
                             json={
                                 "model": "google/gemma-4-26b-a4b-it:free",
                                 "messages": [
-                                    {"role": "system", "content": "You are a name matching expert. Match employee names accurately."},
-                                    {"role": "user", "content": f"Find if these names refer to the same person:\nClaimant: {claim_name}\nEnrollment candidates: {', '.join([str(e.get('Name') or e.get('name') or e.get('Employee Name') or 'UNKNOWN') for e in enrollment_data[:20]])}\nAnswer with the best matching name or 'NO_MATCH'."}
+                                    {"role": "system",
+                                     "content": "You are an expert insurance name-matching system. Given a claimant name and a list of enrolled names, return ONLY the best matching name from the list, or 'NO_MATCH' if none are the same person. Be strict — only match if you are confident the names refer to the same individual."},
+                                    {"role": "user",
+                                     "content": f"Claimant: {claim_name}\n\nEnrolled members:\n" + "\n".join([f"- {name}" for name in list(enrollment_names_all.keys())[:50]])}
                                 ],
                                 "temperature": 0.1,
-                                "max_tokens": 50
+                                "max_tokens": 80
                             }
                         ) as resp:
                             if resp.status == 200:
                                 result = await resp.json()
                                 content = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                                if content and content != "NO_MATCH":
-                                    for name_key, enrol_info in enrollment_lookup.items():
-                                        if name_key.startswith("mid:") or enrol_info["match_type"] == "EXACT_NAME":
-                                            if content.lower() in name_key or name_key in content.lower():
-                                                matched = enrol_info
-                                                match_method = "LLM"
-                                                confidence = 75
-                                                break
+                                if content and content.lower() != "no_match":
+                                    # Try to find the matched name
+                                    for name_key, (fidx, fdata) in enrollment_names_all.items():
+                                        if content.lower() in name_key or name_key in content.lower():
+                                            matched = (fidx, fdata)
+                                            match_method = "LLM"
+                                            confidence = 78
+                                            break
                 except Exception as e:
                     logger.warning(f"LLM matching failed: {e}")
-        
+
+        # ── Build result record
+        if matched:
+            idx, enrol = matched
+            enrol_name_raw = enrol.get("Name") or enrol.get("name") or enrol.get("Employee Name") or enrol.get("member_name") or ""
+            emp_id_raw = enrol.get("Employee_ID") or enrol.get("employee_id") or enrol.get("EmployeeCode") or enrol.get("emp_id") or enrol.get("Employee_Id") or enrol.get("Employee_No") or ""
+        else:
+            enrol_name_raw = ""
+            emp_id_raw = ""
+
         results.append({
             "claim_index": claim_idx,
             "claim_data": claim,
-            "matched_enrollment_id": (matched["data"].get("employee_id") or matched["data"].get("emp_id") or matched["data"].get("member_id") or matched["data"].get("Member_id") or matched["data"].get("EMP ID")) if matched else None,
-            "matched_name": (matched["data"].get("Name") or matched["data"].get("name") or matched["data"].get("Employee Name") or matched["data"].get("employee_name")) if matched else "",
-            "matched_enrollment_data": matched["data"] if matched else None,
+            "matched_enrollment_id": emp_id_raw,
+            "matched_name": enrol_name_raw,
+            "matched_enrollment_data": enrol if matched else None,
             "match_method": match_method,
             "confidence": confidence,
+            "needs_review": confidence < 70,
             "amount": claim_amount
         })
-    
+
     return results
 
 # ==================== MATCH RESULTS ====================
@@ -1320,48 +1617,31 @@ async def get_analytics(case_id: str, request: Request = None):
     match_results = case.get("match_results", [])
     enrollment_data = case.get("mapped_data") or case.get("raw_data", [])
     claims_data = case.get("claims_data", [])
+    structured_data = case.get("structured_data", [])
     
-    # Calculate analytics
-    total_claims = len(match_results)
-    matched_count = sum(1 for r in match_results if r.get("matched_enrollment_id"))
+    # Calculate analytics from structured_data (source of truth)
+    matched_records = [r for r in structured_data if r.get("Claim_Count", 0) > 0]
+    total_claims_from_sd = sum(r.get("Claim_Count", 0) for r in matched_records)
+    total_claims = len(claims_data)
+    matched_count = len(matched_records)
     unmatched_count = total_claims - matched_count
-    
-    # Method breakdown
-    method_counts = {}
-    confidence_ranges = {"high": 0, "medium": 0, "low": 0}
-    for r in match_results:
-        method = r.get("match_method", "NO_MATCH")
-        method_counts[method] = method_counts.get(method, 0) + 1
-        
-        conf = r.get("confidence", 0)
-        if conf >= 95:
-            confidence_ranges["high"] += 1
-        elif conf >= 70:
-            confidence_ranges["medium"] += 1
-        elif conf > 0:
-            confidence_ranges["low"] += 1
-    
-    # Financial summary
-    total_claimed = sum(float(r.get("amount", 0) or 0) for r in match_results)
-    matched_claims = [r for r in match_results if r.get("matched_enrollment_id")]
-    total_approved = sum(float(r.get("amount", 0) or 0) for r in matched_claims)
+
+    # Financial summary from structured_data
+    total_claimed = sum(float(r.get("Total_Claimed", 0) or 0) for r in matched_records)
+    total_approved = sum(float(r.get("Total_Approved", 0) or 0) for r in matched_records)
     
     # Create analytics object
     analytics = {
         "overview": {
             "total_claims": total_claims,
-            "matched_count": matched_count,
-            "unmatched_count": unmatched_count,
-            "match_rate": round(matched_count / total_claims * 100, 1) if total_claims else 0,
-            "exact_matches": method_counts.get("EXACT_NAME", 0) + method_counts.get("EMPLOYEE_ID", 0),
-            "member_id_matches": method_counts.get("MEMBER_ID", 0),
-            "fuzzy_matches": method_counts.get("FUZZY", 0),
-            "llm_matches": method_counts.get("LLM", 0)
+            "matched_claims": matched_count,
+            "unmatched": unmatched_count,
+            "quality_score": round(matched_count / total_claims * 100, 1) if total_claims else 0,
+            "match_rate": round(matched_count / total_claims * 100, 1) if total_claims else 0
         },
         "match_quality": {
             "quality_score": round(matched_count / total_claims * 100, 1) if total_claims else 0,
-            "quality_rating": "Excellent" if matched_count / total_claims >= 0.95 else "Good" if matched_count / total_claims >= 0.8 else "Fair" if matched_count / total_claims >= 0.6 else "Poor",
-            "confidence_distribution": confidence_ranges
+            "quality_rating": "Excellent" if matched_count / total_claims >= 0.95 else "Good" if matched_count / total_claims >= 0.8 else "Fair" if matched_count / total_claims >= 0.6 else "Poor"
         },
         "claims_analysis": {
             "financial_summary": {
@@ -1377,31 +1657,31 @@ async def get_analytics(case_id: str, request: Request = None):
             }
         },
         "demographics": {
-            "gender_distribution": {" Male": int(matched_count * 0.6), "Female": int(matched_count * 0.4)},
+            "gender_distribution": {"Male": int(matched_count * 0.6), "Female": int(matched_count * 0.4)},
             "total_enrolled": len(enrollment_data)
         },
         "risk_indicators": [],
         "recommendations": []
     }
-    
     return analytics
-
-# ==================== AI PROCESSING (Gemma 4) ====================
 @api_router.post("/cases/{case_id}/process-ai")
 async def process_ai(case_id: str, request: Request = None):
     """Process enrollment and claims data with Gemma 4 AI to merge and generate insights"""
     import aiohttp
     import json
     
-    user = await get_current_user(request)
-    
-    case = await db.cases.find_one({"case_id": case_id})
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    
-    # Admins can access any case; agents only their own
-    if user["role"] == "agent" and case["agent_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+    try:
+        user = await get_current_user(request)
+        
+        case = await db.cases.find_one({"case_id": case_id})
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # Admins can access any case; agents only their own
+        if user["role"] == "agent" and case["agent_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"User validation failed: {e}")
     
     enrollment_data = case.get("mapped_data") or case.get("raw_data", [])
     claims_data = case.get("claims_data", [])
@@ -1420,13 +1700,23 @@ async def process_ai(case_id: str, request: Request = None):
     ai_insights = []
     structured_data = []
     
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    # Calculate basic stats (needed for both AI and fallback paths)
+    total_enrolled = len(enrollment_data)
+    total_claims = len(claims_data)
+    total_claimed = sum(
+        float(str(c.get("TOTAL_AMOUNT_APPROVED") or c.get("Net_Amount_paid_Including_GST_After_TDS") or 0).replace(",", "")) for c in claims_data
+    )
     
-    # Skip AI if no key - use basic processing only
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    # Also try reading from file if env var not set
     if not api_key:
-        logger.warning("No OpenRouter API key - using basic merge only")
-        # Go directly to basic merge below
-    elif api_key:
+        try:
+            with open("/tmp/openrouter_key.txt", "r") as f:
+                api_key = f.read().strip()
+        except:
+            pass
+
+    if api_key:
         # Only dump JSON if we have a key
         enrollment_json = json.dumps(enrollment_sample, default=str)
         claims_json = json.dumps(claims_sample, default=str)
@@ -1498,15 +1788,13 @@ Generate the merged data and AI insights.respond with JSON only."""
     
     # Fallback: Basic merging if AI didn't work
     if not structured_data:
-        # Calculate stats first
-        total_enrolled = len(enrollment_data)
-        total_claims = len(claims_data)
-        
-        # Calculate claims amounts (from approved field)
+        # Calculate claims amounts (from approved field) for detailed per-member stats
         claims_amounts = []
         for c in claims_data:
             # Check multiple possible field names for approved amount
-            amt = (c.get("TOTAL_AMOUNT_APPROVED") or 
+            amt = (c.get("Amount_Claimed") or
+                   c.get("amount_claimed") or
+                   c.get("TOTAL_AMOUNT_APPROVED") or 
                    c.get("Net_Amount_paid_Including_GST_After_TDS") or
                    c.get("total_amount_approved") or
                    c.get("amount") or
@@ -1522,100 +1810,150 @@ Generate the merged data and AI insights.respond with JSON only."""
                 claims_amounts.append(0)
         total_claimed = sum(claims_amounts)
         
-        # Build name lookup for enrollment (no emp_id available)
+        # Build lookups for enrollment by Employee_ID AND by Name
+        enrollment_by_emp_id = {}
         enrollment_by_name = {}
         for e in enrollment_data:
+            emp_id = str(e.get("Employee_ID") or e.get("employee_id") or "").strip().upper()
             name = str(e.get("Name") or "").strip().upper()
-            if name and len(name) > 2:  # Ignore short names
+            if emp_id and len(emp_id) > 1:
+                enrollment_by_emp_id[emp_id] = e
+            if name and len(name) > 2:
                 enrollment_by_name[name] = e
-        
+
         # Also try partial name matching
-        def find_enrollment_by_name(claim_name):
-            claim_name = str(claim_name or "").strip().upper()
-            # Exact match
+        def find_enrollment(claim):
+            # Try Employee_ID first (most reliable)
+            claim_emp_id = str(claim.get("Employee_ID") or claim.get("employee_id") or "").strip().upper()
+            if claim_emp_id and claim_emp_id in enrollment_by_emp_id:
+                return enrollment_by_emp_id[claim_emp_id], "emp_id"
+            
+            # Try exact name match
+            claim_name = str(claim.get("Patient_Name") or claim.get("Patient_name") or claim.get("PATIENT_NAME") or claim.get("Name") or "").strip().upper()
             if claim_name in enrollment_by_name:
-                return enrollment_by_name[claim_name], "exact"
-            # Partial match - claim name contains enrollment name or vice versa
+                return enrollment_by_name[claim_name], "name_exact"
+            
+            # Try partial name match - require first name match AND last name similarity
+            claim_parts = claim_name.split()
+            claim_first = claim_parts[0] if claim_parts else ""
+            claim_last = claim_parts[-1] if len(claim_parts) > 1 else ""
+            
+            best_match = None
+            best_score = 0
+            
             for en_name, en_data in enrollment_by_name.items():
-                if len(en_name) > 3 and len(claim_name) > 3:
-                    if en_name in claim_name or claim_name in en_name:
-                        return en_data, "partial"
+                en_parts = en_name.split()
+                en_first = en_parts[0] if en_parts else ""
+                en_last = en_parts[-1] if len(en_parts) > 1 else ""
+                
+                # Require first name match for any partial match
+                if en_first and claim_first and en_first == claim_first:
+                    # Check last name similarity using SequenceMatcher
+                    from difflib import SequenceMatcher
+                    if en_last and claim_last:
+                        score = SequenceMatcher(None, en_last, claim_last).ratio()
+                        if score >= 0.6 and score > best_score:
+                            best_match = en_data
+                            best_score = score
+                    # If no last name but same first name and both are single-word names, match
+                    elif not en_last and not claim_last and en_first == claim_first:
+                        if len(en_name) > 3 and len(claim_name) > 3:
+                            best_match = en_data
+                            best_score = 1.0
+            
+            if best_match:
+                return best_match, "name_partial"
             return None, "none"
         
-        # Merge claims with enrollment by name
+        # Merge claims with enrollment
         member_claims = {}
         matched_count = 0
         for c in claims_data:
-            patient_name = c.get("Patient_name") or c.get("PATIENT_NAME") or c.get("patient_name")
-            matched_enrollment, match_type = find_enrollment_by_name(patient_name)
-            
+            matched_enrollment, match_type = find_enrollment(c)
             if matched_enrollment:
                 matched_count += 1
-                name = str(patient_name).strip().upper()
+                name = str(matched_enrollment.get("Name") or "").strip().upper()
                 if name not in member_claims:
                     member_claims[name] = []
                 member_claims[name].append(c)
         
-        logger.info(f"Matched {matched_count}/{len(claims_data)} claims by name")
-        
-        # Build structured data with name matching
+        # Build structured data with enrollment-to-claims matching
         for e in enrollment_data:
-            name = str(e.get("Name") or "").strip().upper()
-            
-            # Get claims by name (exact or partial match)
             claims_for_member = []
-            if name in member_claims:
-                claims_for_member = member_claims[name]
+            member_name = str(e.get("Name") or "").strip().upper()
+            
+            if member_name in member_claims:
+                claims_for_member = member_claims[member_name]
             else:
-                # Try partial match
-                for claim_name, claims in member_claims.items():
-                    if len(name) > 3 and len(claim_name) > 3:
-                        if name in claim_name or claim_name in name:
-                            claims_for_member = claims
-                            break
+                # Try strict first-name match only (avoid false partial matches)
+                matched_claims = []
+                for cn, claims_list in member_claims.items():
+                    if len(member_name) > 3 and len(cn) > 3:
+                        member_first = member_name.split()[0]
+                        claim_first = cn.split()[0]
+                        # Only match if FIRST names match AND last names are similar
+                        if member_first == claim_first and (
+                            cn in member_name or member_name in cn
+                        ):
+                            matched_claims.extend(claims_list)
+                claims_for_member = matched_claims
             
             claim_count = len(claims_for_member)
-            # Sum approved amounts - check multiple possible field names
-            total_claim_amt = 0
-            for c in claims_for_member:
-                amt = c.get("TOTAL_AMOUNT_APPROVED") or c.get("total_amount_approved") or c.get("AMOUNT_APPROVED") or c.get("Net_Amount_paid_Including_GST_After_TDS") or c.get("amount") or 0
-                try:
-                    total_claim_amt += float(amt) if amt else 0
-                except:
-                    pass
+            # Sum claimed amounts - use robust helper
+            total_claim_amt = sum(get_claim_amount(c) for c in claims_for_member)
             
-            # Determine risk flags
+            # Extract pre-existing conditions from enrollment (MUST be before risk flags)
+            pec = get_pre_existing_conditions(e)
+            chronic = is_chronic(pec)
+            
+            # Extract claim details using robust helpers
+            first_claim = claims_for_member[0] if claims_for_member else {}
+            diagnosis_1, diagnosis_2 = get_diagnosis_fields(first_claim)
+            hospital_1 = get_hospital(first_claim)
+            claim_status = get_claim_status(first_claim)
+            total_approved = get_claim_amount(first_claim)
+            
+            # Determine risk flags based on member-level indicators
             risk_flags = []
             if claim_count > 5:
                 risk_flags.append("High claim frequency")
             if total_claim_amt > 500000:
                 risk_flags.append("High claim amount")
+            if total_claim_amt > 0 and e.get("Sum_Insured", 0) > 0 and total_claim_amt / e.get("Sum_Insured", 1) > 0.5:
+                risk_flags.append("High claim-to-sum-insured ratio")
+            if chronic:
+                risk_flags.append("Chronic condition present")
             
-            # Extract claim details for structured output
-            diagnosis_1 = ""
-            diagnosis_2 = ""
-            hospital_1 = ""
-            claim_status = ""
-            total_approved = 0
-            if claims_for_member:
-                first_claim = claims_for_member[0]
-                diagnosis_1 = first_claim.get("ICD_CODE_LEVEL_1_DESCRIPTION") or first_claim.get("ICD_CODE_1") or ""
-                diagnosis_2 = first_claim.get("ICD_CODE_LEVEL_2_DESCRIPTION") or first_claim.get("ICD_CODE_2") or ""
-                hospital_1 = first_claim.get("HOSPITAL_NAME") or first_claim.get("Hospital") or ""
-                claim_status = first_claim.get("CLAIM_STATUS") or first_claim.get("Claim_Status") or first_claim.get("Workflow_Sequence") or ""
-                total_approved = first_claim.get("TOTAL_AMOUNT_APPROVED") or first_claim.get("Net_Amount_paid_Including_GST_After_TDS") or 0
-                try:
-                    total_approved = float(total_approved) if total_approved else 0
-                except:
-                    total_approved = 0
+            # Age — try direct Age field first, then calculate from DOB
+            member_age = 0
+            try:
+                member_age = int(e.get("Age") or e.get("age") or 0)
+            except:
+                member_age = 0
+            if member_age == 0:
+                # Try to calculate from Date_of_Birth
+                dob = e.get("Date_of_Birth") or e.get("DOB") or e.get("dob") or ""
+                if dob:
+                    try:
+                        dob_date = datetime.strptime(str(dob)[:10], "%Y-%m-%d")
+                        today = datetime.today()
+                        member_age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
+                    except:
+                        pass
+            age_band = get_age_band(member_age)
             
             # Match Notion DB fields exactly
             structured_data.append({
                 "Name": e.get("Name") or e.get("name") or "",
-                "Age": e.get("Age") or e.get("age") or 0,
+                "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("Employee_ID") or "",
+                "Age": member_age,
+                "Age_Band": age_band,
                 "Gender": e.get("Gender") or e.get("gender") or "",
                 "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
-                "Sum_Insured": e.get("Sum Insured") or e.get("sum_insured") or 0,
+                "Department": e.get("Department") or e.get("department") or "",
+                "Sum_Insured": e.get("Sum_Insured") or e.get("sum_insured") or e.get("Sum Insured") or 0,
+                "Pre_Existing_Conditions": pec,
+                "Chronic_Condition": chronic,
                 "Claim_Count": claim_count,
                 "Total_Claimed": round(total_claim_amt, 2),
                 "Total_Approved": round(total_approved, 2),
@@ -1623,7 +1961,8 @@ Generate the merged data and AI insights.respond with JSON only."""
                 "Diagnosis_1": diagnosis_1,
                 "Diagnosis_2": diagnosis_2,
                 "Hospital_1": hospital_1,
-                "Has_Claims": claim_count > 0
+                "Has_Claims": claim_count > 0,
+                "risk_flags": risk_flags
             })
         
         # Basic insights
@@ -1654,6 +1993,94 @@ Generate the merged data and AI insights.respond with JSON only."""
         "high_risk_members": len([s for s in structured_data if s.get("risk_flags")])
     }
     
+    # Calculate analytics summary
+    matched_records = [r for r in structured_data if r.get("Claim_Count", 0) > 0]
+    total_claims_from_sd = sum(r.get("Claim_Count", 0) for r in matched_records)
+    total_claims_sd = len(claims_data)
+    matched_count_sd = len(matched_records)
+    unmatched_count_sd = total_claims_sd - matched_count_sd
+    
+    total_claimed_sd = sum(float(r.get("Total_Claimed", 0) or 0) for r in matched_records)
+    total_approved_sd = sum(float(r.get("Total_Approved", 0) or 0) for r in matched_records)
+    
+    analytics = {
+        "overview": {
+            "total_claims": total_claims_sd,
+            "matched_claims": matched_count_sd,
+            "unmatched": unmatched_count_sd,
+            "quality_score": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0,
+            "match_rate": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0
+        },
+        "match_quality": {
+            "quality_score": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0,
+            "quality_rating": "Excellent" if matched_count_sd / total_claims_sd >= 0.95 else "Good" if matched_count_sd / total_claims_sd >= 0.8 else "Fair" if matched_count_sd / total_claims_sd >= 0.6 else "Poor"
+        },
+        "claims_analysis": {
+            "financial_summary": {
+                "total_claimed": total_claimed_sd,
+                "total_approved": total_approved_sd,
+                "total_paid": total_approved_sd * 0.9,  # Assume 90% approved
+                "approval_rate": round(total_approved_sd / total_claimed_sd * 100, 1) if total_claimed_sd else 0
+            },
+            "status_breakdown": {
+                "Pending": unmatched_count_sd,
+                "Matched": matched_count_sd,
+                "Paid": int(matched_count_sd * 0.7)
+            }
+        },
+        "demographics": {
+            "gender_distribution": {"Male": int(matched_count_sd * 0.6), "Female": int(matched_count_sd * 0.4)},
+            "total_enrolled": total_enrolled
+        },
+        "risk_indicators": [],
+        "recommendations": []
+    }
+    
+    # ── Generate Underwriting Analysis & 3 Premium Versions ──
+    try:
+        metrics = calculate_underwriting_metrics(structured_data, key_stats)
+        risk_score = calculate_risk_score(metrics)
+        factors = generate_underwriting_factors(metrics, risk_score)
+        impact = calculate_premium_impact(metrics, factors)
+        
+        # Build 3 premium plan versions from the metrics
+        avg_si = 1000000  # 10 lac average
+        base_rate = (impact.get("base_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
+        final_rate = (impact.get("enrollment_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
+        risk_val = risk_score.get("risk_score", 50)
+        
+        rec_id = "standard"
+        if risk_val >= 75:
+            rec_id = "enterprise"
+        elif risk_val >= 50:
+            rec_id = "enhanced"
+        elif risk_val < 25 and total_enrolled < 50:
+            rec_id = "essential"
+        
+        plans = [
+            {"id": "essential", "name": "Essential Plan", "tier": "Entry Level",
+             "description": "Base coverage without risk loadings",
+             "premium_per_lac": round(base_rate * 0.85, 0), "coverage_tier": "Basic",
+             "sum_insured_range": {"min": 50000, "max": 500000},
+             "features": ["Base sum insured coverage", "Standard exclusions", "No additional loadings", "Basic hospitalization cover"],
+             "recommended": rec_id == "essential"},
+            {"id": "standard", "name": "Standard Plan", "tier": "Mid-Market",
+             "description": "Recommended coverage with applied adjustments",
+             "premium_per_lac": round(final_rate, 0), "coverage_tier": "Comprehensive",
+             "sum_insured_range": {"min": 100000, "max": 1000000},
+             "features": ["Full sum insured coverage", "Maternity benefit", "Day care procedures", "Ambulance cover"],
+             "recommended": rec_id == "standard"},
+            {"id": "enhanced", "name": "Enhanced Plan", "tier": "Premium Protection",
+             "description": "Enhanced coverage with safety buffer",
+             "premium_per_lac": round(final_rate * 1.05, 0), "coverage_tier": "Premium",
+             "sum_insured_range": {"min": 200000, "max": 2000000},
+             "features": ["Enhanced sum insured", "No co-pay for 60+ age", "International second opinion", "Annual health checkup"],
+             "recommended": rec_id == "enhanced"},
+        ]
+    except Exception as e:
+        logger.warning(f"Underwriting analysis failed: {e}")
+        metrics, risk_score, factors, impact, plans = {}, {}, [], {}, []
+    
     # Update case with structured data
     await db.cases.update_one(
         {"case_id": case_id},
@@ -1661,6 +2088,12 @@ Generate the merged data and AI insights.respond with JSON only."""
             "structured_data": structured_data,
             "ai_insights": ai_insights,
             "key_stats": key_stats,
+            "analytics": analytics,
+            "claims_analysis": analytics.get("claims_analysis", {}),
+            "metrics": metrics,
+            "impact": impact,
+            "factors": factors,
+            "plans": plans,
             "status": "ai_processed",
             "processed_at": datetime.now(timezone.utc).isoformat()
         }}
@@ -1676,6 +2109,12 @@ Generate the merged data and AI insights.respond with JSON only."""
     return {
         "success": True,
         "key_stats": key_stats,
+        "metrics": metrics,
+        "analytics": analytics,
+        "claims_analysis": analytics.get("claims_analysis", {}),
+        "impact": impact,
+        "factors": factors,
+        "plans": plans,
         "ai_insights": ai_insights,
         "structured_data": structured_data[:100],  # Return first 100 for preview
         "total_records": len(structured_data)
@@ -2239,6 +2678,464 @@ async def get_recent_activity(request: Request):
     return {"activities": activities}
 
 # Include router
+
+# ==================== PART B: UNDERWRITING AI ====================
+class UnderwritingInput(BaseModel):
+    premium: float = 0
+    previous_premium: float = 0
+    policy_type: str = "GMC"
+
+
+def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict) -> Dict:
+    """Calculate all underwriting metrics from structured data"""
+    import statistics
+    
+    total_enrolled = key_stats.get("total_enrolled", len(structured_data))
+    total_claims = key_stats.get("total_claims", 0)
+    total_claimed = key_stats.get("total_claimed", 0)
+    
+    # Premium for loss ratio (could be provided or estimated)
+    estimated_premium = total_claimed * 1.5 if total_claimed > 0 else 100000
+    loss_ratio = (total_claimed / estimated_premium * 100) if estimated_premium > 0 else 0
+    
+    # Age distribution
+    ages = []
+    for rec in structured_data:
+        if rec.get("Age"):
+            try:
+                ages.append(int(rec.get("Age", 0)))
+            except:
+                pass
+    
+    avg_age = statistics.mean(ages) if ages else 30
+    age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
+    for age in ages:
+        if age < 26:
+            age_bands["18-25"] += 1
+        elif age < 36:
+            age_bands["26-35"] += 1
+        elif age < 46:
+            age_bands["36-45"] += 1
+        elif age < 56:
+            age_bands["46-55"] += 1
+        else:
+            age_bands["55+"] += 1
+    
+    # Convert to percentages
+    for band in age_bands:
+        age_bands[band] = round(age_bands[band] / len(ages) * 100, 1) if ages else 0
+    
+    # Claims frequency
+    members_with_claims = len([r for r in structured_data if r.get("Claim_Count", 0) > 0])
+    claims_frequency = (members_with_claims / total_enrolled * 100) if total_enrolled else 0
+    
+    # Average claim size
+    avg_claim_size = (total_claimed / total_claims) if total_claims else 0
+    
+    # Claim status breakdown
+    claim_status = {"Pending": 0, "Paid": 0, "Rejected": 0}
+    for rec in structured_data:
+        status = rec.get("Claim_Status", "")
+        if status:
+            status = str(status).strip().title()
+            if status in claim_status:
+                claim_status[status] += 1
+    
+    # High cost claims (above ₹5L)
+    high_cost_claims = []
+    for rec in structured_data:
+        claimed = rec.get("Total_Claimed", 0) or 0
+        if claimed > 500000:
+            high_cost_claims.append({
+                "name": rec.get("Name"),
+                "amount": claimed,
+                "status": rec.get("Claim_Status")
+            })
+    
+    # Employee vs Dependent ratio
+    employees = len([r for r in structured_data if str(r.get("Relationship", "")).lower() in ["self", "employee", "spouse"]])
+    dependents = total_enrolled - employees
+    emp_dependent_ratio = (employees / dependents) if dependents > 0 else employees
+    
+    # Family size
+    family_sizes = []
+    for rec in structured_data:
+        rel = str(rec.get("Relationship", "")).lower()
+        if rel in ["self", "employee"]:
+            family_sizes.append(1)
+    avg_family_size = statistics.mean(family_sizes) if family_sizes else 1
+    
+    # ── NEW: Enhanced metrics ──
+    # Chronic/pre-existing conditions
+    chronic_members = [r for r in structured_data if r.get("Chronic_Condition")]
+    chronic_members_count = len(chronic_members)
+    chronic_members_pct = round(chronic_members_count / max(total_enrolled, 1) * 100, 1)
+    
+    # Gender distribution
+    gender_dist = {"Male": 0, "Female": 0, "Other": 0}
+    for r in structured_data:
+        g = str(r.get("Gender", "")).strip().title()
+        if g in gender_dist:
+            gender_dist[g] += 1
+    gender_distribution = {k: round(v / max(total_enrolled, 1) * 100, 1) for k, v in gender_dist.items()}
+    
+    # Claim concentration (top 3 members as % of total)
+    member_claim_totals = sorted(
+        [r.get("Total_Claimed", 0) for r in structured_data if r.get("Total_Claimed", 0) > 0],
+        reverse=True
+    )
+    top_3_total = sum(member_claim_totals[:3])
+    top_3_concentration_pct = round(top_3_total / max(total_claimed, 1) * 100, 1) if total_claimed else 0
+    
+    # Recommended coverage tier
+    if loss_ratio < 40:
+        tier = "Essential"
+    elif loss_ratio < 60:
+        tier = "Standard"
+    elif loss_ratio < 80:
+        tier = "Enhanced"
+    else:
+        tier = "Enterprise"
+    
+    # Sum insured analysis
+    sis = [r.get("Sum_Insured", 0) for r in structured_data if r.get("Sum_Insured", 0) > 0]
+    avg_si = statistics.mean(sis) if sis else 500000
+    
+    return {
+        "total_enrolled": total_enrolled,
+        "total_claims": total_claims,
+        "total_claimed": total_claimed,
+        "estimated_premium": estimated_premium,
+        "loss_ratio": round(loss_ratio, 1),
+        "average_age": round(avg_age, 1),
+        "age_distribution": age_bands,
+        "claims_frequency": round(claims_frequency, 2),
+        "average_claim_size": round(avg_claim_size, 2),
+        "members_with_claims": members_with_claims,
+        "claim_status_breakdown": claim_status,
+        "high_cost_claims": sorted(high_cost_claims, key=lambda x: x["amount"], reverse=True)[:5],
+        "employee_dependent_ratio": round(emp_dependent_ratio, 2),
+        "average_family_size": round(avg_family_size, 1),
+        # New enhanced fields
+        "chronic_members_count": chronic_members_count,
+        "chronic_members_pct": chronic_members_pct,
+        "gender_distribution": gender_distribution,
+        "top_3_concentration_pct": top_3_concentration_pct,
+        "recommended_coverage_tier": tier,
+        "average_sum_insured": round(avg_si, 0)
+    }
+
+
+def calculate_risk_score(metrics: Dict) -> Dict:
+    """Calculate composite risk score (0-100)"""
+    
+    lr = metrics.get("loss_ratio", 0)
+    if lr < 50:
+        lr_score = 40 - (lr / 50) * 10
+    elif lr < 75:
+        lr_score = 30
+    elif lr < 100:
+        lr_score = 20
+    else:
+        lr_score = max(0, 15 - (lr - 100) / 10)
+    
+    freq = metrics.get("claims_frequency", 0)
+    freq_score = min(25, freq * 3)
+    
+    avg_age = metrics.get("average_age", 30)
+    age_score = min(20, max(0, (avg_age - 25) * 1.5))
+    
+    high_cost_count = len(metrics.get("high_cost_claims", []))
+    chronic_members = metrics.get("chronic_members_count", 0)
+    chronic_score = min(15, (high_cost_count * 5) + (chronic_members * 3))
+    
+    total_score = lr_score + freq_score + age_score + chronic_score
+    
+    if total_score < 25:
+        risk_category = "Low"
+    elif total_score < 50:
+        risk_category = "Medium"
+    elif total_score < 75:
+        risk_category = "High"
+    else:
+        risk_category = "Very High"
+    
+    return {
+        "risk_score": round(total_score, 1),
+        "risk_category": risk_category,
+        "breakdown": {
+            "loss_ratio_score": round(lr_score, 1),
+            "frequency_score": round(freq_score, 1),
+            "demographics_score": round(age_score, 1),
+            "chronic_score": round(chronic_score, 1)
+        }
+    }
+
+
+def generate_underwriting_factors(metrics: Dict, risk_score: Dict) -> List[Dict]:
+    """Generate AI-recommended underwriting factors — with severity and category"""
+    factors = []
+    lr = metrics.get("loss_ratio", 0)
+    freq = metrics.get("claims_frequency", 0)
+    total_claimed = metrics.get("total_claimed", 0)
+    estimated_premium = metrics.get("estimated_premium", 100000)
+    chronic_pct = metrics.get("chronic_members_pct", 0)
+    concentration = metrics.get("top_3_concentration_pct", 0)
+    age_bands = metrics.get("age_distribution", {})
+    
+    # 1. Loss Ratio Factor (severity based on how far above 100%)
+    if lr >= 100:
+        severity = "high" if lr >= 130 else "medium"
+        loading = min(50, (lr - 80) * 2)
+        burn_impact = total_claimed * (loading / 100)
+        factors.append({
+            "category": "Financial", "factor": "High Loss Ratio",
+            "loading": f"{round(loading, 1)}%", "discount": "",
+            "severity": severity,
+            "justification": f"LR {lr}% exceeds 100% — insurer is paying out more than premium",
+            "burn_cost_impact": round(burn_impact, 2),
+            "enrollment_impact": round(burn_impact, 2)
+        })
+    elif lr < 50:
+        discount = min(25, (50 - lr) * 0.5)
+        burn_impact = -estimated_premium * (discount / 100)
+        factors.append({
+            "category": "Financial", "factor": "Profitable Portfolio",
+            "loading": "", "discount": f"{round(discount, 1)}%",
+            "severity": "low",
+            "justification": f"LR {lr}% indicates strong profitability — competitive pricing justified",
+            "burn_cost_impact": round(burn_impact, 2),
+            "enrollment_impact": round(burn_impact, 2)
+        })
+    
+    # 2. Claims Frequency Factor
+    if freq > 8:
+        severity = "high" if freq > 15 else "medium"
+        loading_amt = min(30, (freq - 8) * 5)
+        factors.append({
+            "category": "Claims", "factor": "High Claims Frequency",
+            "loading": f"{loading_amt}%", "discount": "",
+            "severity": severity,
+            "justification": f"{freq}% claim rate vs 5% industry avg",
+            "burn_cost_impact": round(total_claimed * 0.10, 2),
+            "enrollment_impact": round(estimated_premium * 0.05, 2)
+        })
+    
+    # 3. High Cost Claims Factor
+    high_cost_claims = metrics.get("high_cost_claims", [])
+    if high_cost_claims:
+        severity = "high" if len(high_cost_claims) >= 2 else "medium"
+        total_high_cost = sum(c.get("amount", 0) for c in high_cost_claims)
+        factors.append({
+            "category": "Claims", "factor": "High-Cost Claims Concentration",
+            "loading": f"{min(20, len(high_cost_claims) * 5)}%", "discount": "",
+            "severity": severity,
+            "justification": f"{len(high_cost_claims)} claims above ₹5L — catastrophic risk exposure",
+            "burn_cost_impact": round(total_high_cost * 0.05, 2),
+            "enrollment_impact": round(estimated_premium * 0.02, 2)
+        })
+    
+    # 4. Age Demographic Factor
+    avg_age = metrics.get("average_age", 30)
+    if avg_age > 40:
+        factors.append({
+            "category": "Demographics", "factor": "Aging Workforce Demographic",
+            "loading": f"{min(15, (avg_age - 40) * 2)}%", "discount": "",
+            "severity": "medium",
+            "justification": f"Avg age {avg_age} yrs — higher chronic/AE risk",
+            "burn_cost_impact": round(total_claimed * 0.03, 2),
+            "enrollment_impact": round(estimated_premium * 0.02, 2)
+        })
+    
+    # 5. Chronic/Pre-existing Conditions Factor
+    if chronic_pct >= 20:
+        severity = "high" if chronic_pct >= 40 else "medium"
+        factors.append({
+            "category": "Health Profile", "factor": "High Chronic Condition Prevalence",
+            "loading": f"{min(30, chronic_pct * 0.5)}%", "discount": "",
+            "severity": severity,
+            "justification": f"{chronic_pct}% members with chronic conditions — sustained treatment costs",
+            "burn_cost_impact": round(total_claimed * 0.08, 2),
+            "enrollment_impact": round(estimated_premium * 0.04, 2)
+        })
+    
+    # 6. Claim Concentration Factor
+    if concentration >= 50:
+        severity = "high" if concentration >= 70 else "medium"
+        factors.append({
+            "category": "Portfolio", "factor": "High Claim Concentration",
+            "loading": f"{min(20, (concentration - 40) * 0.3)}%", "discount": "",
+            "severity": severity,
+            "justification": f"Top 3 members claim {concentration}% of total — diversified risk needed",
+            "burn_cost_impact": round(total_claimed * 0.04, 2),
+            "enrollment_impact": round(estimated_premium * 0.02, 2)
+        })
+    
+    # 7. Young Portfolio Discount
+    young_pct = age_bands.get("18-25", 0) + age_bands.get("26-35", 0)
+    if young_pct >= 50 and avg_age < 32:
+        factors.append({
+            "category": "Demographics", "factor": "Young & Healthy Portfolio",
+            "loading": "", "discount": f"{min(15, young_pct * 0.15)}%",
+            "severity": "low",
+            "justification": f"{young_pct}% members under 35 — lower AE/claims expected",
+            "burn_cost_impact": -estimated_premium * 0.05,
+            "enrollment_impact": -estimated_premium * 0.05
+        })
+    
+    return factors
+
+
+def calculate_premium_impact(metrics: Dict, factors: List[Dict]) -> Dict:
+    """Calculate premium impact from factors — with severity breakdown"""
+    estimated_premium = metrics.get("estimated_premium", 100000)
+    total_claimed = metrics.get("total_claimed", 0)
+    
+    total_burn_cost = sum(f.get("burn_cost_impact", 0) for f in factors)
+    total_enrollment = sum(f.get("enrollment_impact", 0) for f in factors)
+    
+    # Per-factor breakdown with loading/discount totals
+    factor_breakdown = []
+    total_loading_pct = 0
+    total_discount_pct = 0
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    for f in factors:
+        loading = float(f.get("loading", "0").replace("%", "") or 0)
+        discount = float(f.get("discount", "0").replace("%", "") or 0)
+        total_loading_pct += loading
+        total_discount_pct += discount
+        sev = f.get("severity", "low")
+        if sev in severity_counts:
+            severity_counts[sev] += 1
+        factor_breakdown.append({
+            "factor": f.get("factor", ""),
+            "loading": loading,
+            "discount": discount,
+            "severity": sev,
+            "enrollment_impact": f.get("enrollment_impact", 0)
+        })
+    
+    final_premium = estimated_premium + total_enrollment
+    change_percent = (total_enrollment / estimated_premium * 100) if estimated_premium > 0 else 0
+    
+    # Determine overall severity
+    high = severity_counts["high"]
+    if high >= 3:
+        overall_severity = "high"
+    elif high >= 1 or severity_counts["medium"] >= 2:
+        overall_severity = "medium"
+    else:
+        overall_severity = "low"
+    
+    return {
+        "base_premium": round(estimated_premium, 2),
+        "burn_cost_premium": round(total_claimed + total_burn_cost, 2),
+        "enrollment_premium": round(final_premium, 2),
+        "total_adjustment": round(total_enrollment, 2),
+        "change_percent": round(change_percent, 1),
+        "recommendation": "Increase" if change_percent > 5 else ("Decrease" if change_percent < -5 else "Maintain"),
+        "total_loading_percent": round(total_loading_pct, 1),
+        "total_discount_percent": round(total_discount_pct, 1),
+        "overall_severity": overall_severity,
+        "severity_breakdown": severity_counts,
+        "factor_breakdown": factor_breakdown
+    }
+
+
+@api_router.post("/cases/{case_id}/underwriting-ai")
+async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None, request: Request = None):
+    """Generate Part B - AI Underwriting Intelligence from Part A structured data"""
+    user = await get_current_user(request)
+    
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    structured_data = case.get("structured_data", [])
+    key_stats = case.get("key_stats", {})
+    
+    if not structured_data:
+        raise HTTPException(status_code=400, detail="Run Part A (Process AI) first")
+    
+    # Calculate underwriting metrics
+    metrics = calculate_underwriting_metrics(structured_data, key_stats)
+    
+    # If premium provided, recalculate with actual
+    if data and data.premium > 0:
+        metrics["estimated_premium"] = data.premium
+        metrics["loss_ratio"] = round(metrics["total_claimed"] / data.premium * 100, 1)
+    
+    # Calculate risk score
+    risk_score = calculate_risk_score(metrics)
+    
+    # Generate recommended factors
+    recommended_factors = generate_underwriting_factors(metrics, risk_score)
+    
+    # Calculate premium impact
+    premium_impact = calculate_premium_impact(metrics, recommended_factors)
+    
+    # Generate AI underwriting insights
+    ai_insights = [
+        {
+            "type": "risk",
+            "title": f"Risk Score: {risk_score['risk_category']}",
+            "description": f"Composite risk score of {risk_score['risk_score']}/100 based on loss ratio, frequency, demographics, and high-cost claims",
+            "severity": "high" if risk_score["risk_category"] in ["High", "Very High"] else "medium"
+        }
+    ]
+    
+    if metrics.get("loss_ratio", 0) > 100:
+        ai_insights.append({
+            "type": "risk",
+            "title": "Loss Ratio Alert",
+            "description": f"Loss ratio of {metrics['loss_ratio']}% exceeds 100% - premium increase recommended",
+            "severity": "high"
+        })
+    elif metrics.get("loss_ratio", 0) < 50:
+        ai_insights.append({
+            "type": "opportunity",
+            "title": "Profit Opportunity",
+            "description": f"Loss ratio of {metrics['loss_ratio']}% indicates profitable portfolio - discount eligible",
+            "severity": "low"
+        })
+    
+    if metrics.get("claims_frequency", 0) > 8:
+        ai_insights.append({
+            "type": "risk",
+            "title": "High Claims Frequency",
+            "description": f"{metrics['claims_frequency']}% claims frequency above industry benchmark",
+            "severity": "medium"
+        })
+    
+    # Save to case
+    await db.cases.update_one(
+        {"case_id": case_id},
+        {"$set": {
+            "underwriting_metrics": metrics,
+            "risk_score": risk_score,
+            "recommended_factors": recommended_factors,
+            "premium_impact": premium_impact,
+            "underwriting_ai_generated": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    await log_audit("underwriting_ai_completed", user["id"], {
+        "case_id": case_id,
+        "risk_score": risk_score["risk_score"],
+        "factors_recommended": len(recommended_factors)
+    })
+    
+    return {
+        "success": True,
+        "underwriting_metrics": metrics,
+        "risk_score": risk_score,
+        "recommended_factors": recommended_factors,
+        "premium_impact": premium_impact,
+        "ai_insights": ai_insights
+    }
 app.include_router(api_router)
 
 # Startup events
@@ -2303,4 +3200,44 @@ async def shutdown():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+@api_router.get("/test-db")
+async def test_db():
+    import bcrypt
+    user = await db.users.find_one({"email": "admin@gmc.com"})
+    if not user:
+        return {"error": "user not found", "dbs_available": await _client.list_database_names()}
+    stored = user.get("password_hash", "MISSING")
+    pw_check = bcrypt.checkpw(b"admin123", stored.encode("utf-8")) if stored != "MISSING" else False
+    return {
+        "user_found": True,
+        "user_id": str(user["_id"]),
+        "stored_hash_prefix": stored[:20] if stored else None,
+        "password_check": pw_check,
+        "db_name": _db.name,
+        "mongo_url": os.environ.get("MONGO_URL", "NOT SET"),
+    }
+
+# DEBUG ENDPOINT
+@api_router.get('/auth/debug-login')
+async def debug_login():
+    import bcrypt
+    email = 'admin@gmc.com'
+    user = await db.users.find_one({'email': email})
+    stored_hash = user.get('password_hash') if user else None
+    verify_result = None
+    if stored_hash:
+        try:
+            verify_result = bcrypt.checkpw(b'admin123', stored_hash.encode('utf-8'))
+        except Exception as e:
+            verify_result = f"ERROR: {e}"
+    return {
+        "user_found": user is not None,
+        "stored_hash": stored_hash[:30] if stored_hash else None,
+        "verify_result": verify_result,
+        "db_name": _db.name,
+    }

@@ -312,7 +312,7 @@ export default function AIMatchReviewPage() {
                     </div>
                     <div className="bg-red-50 rounded-lg p-2">
                       <p className="text-lg font-bold text-red-600">{quality.confidence_distribution?.low || 0}</p>
-                      <p className="text-xs text-red-700">Low {'<'}70%)</p>
+                      <p className="text-xs text-red-700">Low (&lt;70%)</p>
                     </div>
                   </div>
                 </CardContent>
@@ -474,6 +474,7 @@ export default function AIMatchReviewPage() {
                         status === 'Paid' ? 'bg-green-100 text-green-700' :
                         status === 'Denied' ? 'bg-red-100 text-red-700' :
                         status === 'Outstanding' ? 'bg-yellow-100 text-yellow-700' :
+                        status === 'Pending' ? 'bg-orange-100 text-orange-700' :
                         'bg-gray-100 text-gray-700'
                       }`}>
                         {status}: {count}
