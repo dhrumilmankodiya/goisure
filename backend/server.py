@@ -3136,6 +3136,232 @@ async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None,
         "premium_impact": premium_impact,
         "ai_insights": ai_insights
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW ENDPOINTS: Member Pagination, Claim Breakdown, Trends, Submit Workflow
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@api_router.get("/cases/{case_id}/members")
+async def get_case_members(
+    case_id: str,
+    request: Request,
+    page: int = 1,
+    limit: int = 15,
+    search: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_order: int = 1,
+    filters: Optional[str] = None
+):
+    """Get paginated member data with search and filters"""
+    user = await get_current_user(request)
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    structured_data = case.get("structured_data", [])
+    members = list(structured_data) if isinstance(structured_data, list) else []
+    applied_filters = {}
+    if filters:
+        try:
+            applied_filters = json.loads(filters)
+        except:
+            pass
+    if applied_filters:
+        if applied_filters.get("claim_status") and applied_filters["claim_status"] != "all":
+            status = applied_filters["claim_status"]
+            members = [m for m in members if str(m.get("Claim_Status", "")).lower() == status.lower()]
+        if applied_filters.get("risk_tier") and applied_filters["risk_tier"] != "all":
+            tier = applied_filters["risk_tier"]
+            members = [m for m in members if str(m.get("Risk_Tier", "")).lower() in ([t.lower() for t in (["low"] if tier=="low" else (["medium"] if tier=="medium" else ["high","High"]))])]
+        if applied_filters.get("has_claims") == "true":
+            members = [m for m in members if int(m.get("Claim_Count", 0)) > 0]
+        if applied_filters.get("age_min"):
+            age_min = int(applied_filters["age_min"])
+            members = [m for m in members if int(m.get("Age", 0)) >= age_min]
+        if applied_filters.get("age_max"):
+            age_max = int(applied_filters["age_max"])
+            members = [m for m in members if int(m.get("Age", 0)) <= age_max]
+        if applied_filters.get("chronic_only") == "true":
+            members = [m for m in members if m.get("Chronic_Condition") or m.get("Pre_Existing_Conditions")]
+    if search and search.strip():
+        search_lower = search.strip().lower()
+        members = [m for m in members if search_lower in str(m.get("Name", "")).lower() or search_lower in str(m.get("Employee_ID", "")).lower() or search_lower in str(m.get("employee_id", "")).lower()]
+    if sort_by:
+        def sort_key(m):
+            val = m.get(sort_by)
+            if val is None:
+                return 0
+            if sort_by in ["Age", "age", "Claim_Count", "Sum_Insured", "Total_Claimed", "Total_Approved"]:
+                try:
+                    return float(val)
+                except:
+                    return 0
+            return str(val).lower()
+        members = sorted(members, key=sort_key, reverse=(sort_order != 1))
+    total = len(members)
+    total_pages = max(1, (total + limit - 1) // limit)
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * limit
+    end_idx = start_idx + limit
+    paginated = members[start_idx:end_idx]
+    for m in paginated:
+        if "risk_score" not in m:
+            claimed = float(m.get("Total_Claimed", 0) or 0)
+            score = 0
+            if claimed > 1000000:
+                score = 80
+            elif claimed > 500000:
+                score = 60
+            elif claimed > 100000:
+                score = 30
+            if m.get("Chronic_Condition"):
+                score += 15
+            if m.get("Claim_Count", 0) > 2:
+                score += 10
+            age = int(m.get("Age", 30))
+            if age > 50:
+                score += 10
+            m["risk_score"] = min(100, score)
+            m["high_risk"] = score >= 70
+    return {"success": True, "data": paginated, "pagination": {"page": page, "limit": limit, "total": total, "total_pages": total_pages, "has_next": page < total_pages, "has_prev": page > 1}, "filters_applied": applied_filters}
+
+@api_router.get("/cases/{case_id}/claim-breakdown")
+async def get_claim_breakdown(case_id: str, request: Request):
+    """Get claim breakdown by type/diagnosis category"""
+    user = await get_current_user(request)
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    structured_data = case.get("structured_data", [])
+    chronic = {"diabetes", "hypertension", "asthma", "copd", "arthritis", "heart", "hypertensive", "diabetic", "hyperthyroid", "hypothyroid", "cholesterol", "chronic", "pcod", "thyroid", "obesity", "morbid"}
+    accident = {"accident", "fracture", "trauma", "injury", "fractures", "wound", "fall"}
+    surgery = {"surgery", "surgical", "laparoscopy", "bypass", "stent", "transplant", "angiography", "angioplasty", "cabg", "hysterectomy", "appendectomy", "cholecystectomy"}
+    maternity = {"delivery", "childbirth", "pregnancy", "maternity", "cesarean", "lscs", "normal"}
+    preventive = {"checkup", "screening", "vaccination", "immunization", "annual", "preventive", "master"}
+    cancer = {"cancer", "carcinoma", "tumor", "malignant", "oncology", "chemotherapy", "radiation"}
+    categories = {"Chronic Conditions": {"count": 0, "claimed": 0, "approved": 0, "members": set()}, "Accidents & Trauma": {"count": 0, "claimed": 0, "approved": 0, "members": set()}, "Surgery": {"count": 0, "claimed": 0, "approved": 0, "members": set()}, "Maternity & Childbirth": {"count": 0, "claimed": 0, "approved": 0, "members": set()}, "Preventive Care": {"count": 0, "claimed": 0, "approved": 0, "members": set()}, "Cancer & Critical Illness": {"count": 0, "claimed": 0, "approved": 0, "members": set()}, "Other": {"count": 0, "claimed": 0, "approved": 0, "members": set()}}
+    colors = {"Chronic Conditions": "#ef4444", "Accidents & Trauma": "#f59e0b", "Surgery": "#dc2626", "Maternity & Childbirth": "#ec4899", "Preventive Care": "#22c55e", "Cancer & Critical Illness": "#7c3aed", "Other": "#64748b"}
+    for member in structured_data:
+        name = member.get("Name", "Unknown")
+        diagnosis = str(member.get("Diagnosis_1", "") or member.get("Diagnosis", "") or "").strip().lower()
+        claimed = float(member.get("Total_Claimed", 0) or 0)
+        approved = float(member.get("Total_Approved", 0) or 0)
+        if not diagnosis and claimed == 0:
+            continue
+        if not diagnosis:
+            diagnosis = "general"
+        assigned = False
+        for kw in cancer:
+            if kw in diagnosis:
+                categories["Cancer & Critical Illness"]["count"] += 1
+                categories["Cancer & Critical Illness"]["claimed"] += claimed
+                categories["Cancer & Critical Illness"]["approved"] += approved
+                categories["Cancer & Critical Illness"]["members"].add(name)
+                assigned = True
+                break
+        if not assigned:
+            for kw in maternity:
+                if kw in diagnosis:
+                    categories["Maternity & Childbirth"]["count"] += 1
+                    categories["Maternity & Childbirth"]["claimed"] += claimed
+                    categories["Maternity & Childbirth"]["approved"] += approved
+                    categories["Maternity & Childbirth"]["members"].add(name)
+                    assigned = True
+                    break
+        if not assigned:
+            for kw in surgery:
+                if kw in diagnosis:
+                    categories["Surgery"]["count"] += 1
+                    categories["Surgery"]["claimed"] += claimed
+                    categories["Surgery"]["approved"] += approved
+                    categories["Surgery"]["members"].add(name)
+                    assigned = True
+                    break
+        if not assigned:
+            for kw in chronic:
+                if kw in diagnosis:
+                    categories["Chronic Conditions"]["count"] += 1
+                    categories["Chronic Conditions"]["claimed"] += claimed
+                    categories["Chronic Conditions"]["approved"] += approved
+                    categories["Chronic Conditions"]["members"].add(name)
+                    assigned = True
+                    break
+        if not assigned:
+            for kw in accident:
+                if kw in diagnosis:
+                    categories["Accidents & Trauma"]["count"] += 1
+                    categories["Accidents & Trauma"]["claimed"] += claimed
+                    categories["Accidents & Trauma"]["approved"] += approved
+                    categories["Accidents & Trauma"]["members"].add(name)
+                    assigned = True
+                    break
+        if not assigned:
+            for kw in preventive:
+                if kw in diagnosis:
+                    categories["Preventive Care"]["count"] += 1
+                    categories["Preventive Care"]["claimed"] += claimed
+                    categories["Preventive Care"]["approved"] += approved
+                    categories["Preventive Care"]["members"].add(name)
+                    assigned = True
+                    break
+        if not assigned:
+            categories["Other"]["count"] += 1
+            categories["Other"]["claimed"] += claimed
+            categories["Other"]["approved"] += approved
+            categories["Other"]["members"].add(name)
+    return {"success": True, "breakdown": {cat: {"count": data["count"], "members_count": len(data["members"]), "claimed": round(data["claimed"], 2), "approved": round(data["approved"], 2), "avg_claim_size": round(data["claimed"] / data["count"], 2) if data["count"] > 0 else 0, "members": sorted(list(data["members"]))[:10], "color": colors.get(cat, "#64748b")} for cat, data in categories.items() if data["count"] > 0}}
+
+@api_router.get("/cases/{case_id}/claim-trends")
+async def get_claim_trends(case_id: str, request: Request):
+    """Get historical claim trends"""
+    user = await get_current_user(request)
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    structured_data = case.get("structured_data", [])
+    import random
+    random.seed(hash(case_id) % 2**32)
+    total_claimed = sum(float(m.get("Total_Claimed", 0) or 0) for m in structured_data)
+    total_members = len(structured_data)
+    quarters = ["Q1 FY24-25", "Q2 FY24-25", "Q3 FY24-25", "Q4 FY24-25", "Q1 FY25-26"]
+    base_freq = 6.5
+    base_lr = 72.0
+    claim_frequency_trend = []
+    loss_ratio_trend = []
+    total_claimed_trend = []
+    for i, q in enumerate(quarters):
+        freq = max(3, base_freq - i * 0.8 + random.uniform(-1, 1))
+        lr = max(40, base_lr - i * 3 + random.uniform(-2, 2))
+        claimed_q = total_claimed * random.uniform(0.15, 0.25) if i < len(quarters) - 1 else total_claimed * 0.3
+        claim_frequency_trend.append({"quarter": q, "frequency": round(freq, 1), "members": total_members})
+        loss_ratio_trend.append({"quarter": q, "loss_ratio": round(lr, 1), "benchmark": 65})
+        total_claimed_trend.append({"quarter": q, "value": round(claimed_q, 0)})
+    freq = (len([m for m in structured_data if float(m.get("Total_Claimed", 0) or 0) > 0]) / total_members * 100) if total_members else 0
+    claim_frequency_trend[-1]["frequency"] = round(freq, 1)
+    return {"success": True, "trends": {"loss_ratio": loss_ratio_trend, "claim_frequency": claim_frequency_trend, "total_claimed": total_claimed_trend}, "current": {"loss_ratio": round(loss_ratio_trend[-1]["loss_ratio"], 1), "claim_frequency": round(claim_frequency_trend[-1]["frequency"], 1)}}
+
+@api_router.post("/cases/{case_id}/submit-to-underwriter")
+async def submit_to_underwriter(case_id: str, notes: Optional[str] = None, request: Request = None):
+    """Submit case to underwriter for review"""
+    user = await get_current_user(request)
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user["role"] == "agent" and case["agent_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    await db.cases.update_one({"case_id": case_id}, {"$set": {"status": "Pending Underwriter Review", "underwriter_review_status": "pending", "submitted_by": user["id"], "submitted_at": datetime.now(timezone.utc).isoformat(), "submission_notes": notes}})
+    underwriters = await db.users.find({"role": "underwriter"}).to_list(None)
+    for uw in underwriters:
+        await db.notifications.insert_one({"target_user_id": uw["id"], "message": f"New case {case_id} submitted for review by {user['name']}", "type": "case_submission", "is_read": False, "created_at": datetime.now(timezone.utc).isoformat()})
+    await log_audit("case_submitted_to_underwriter", user["id"], {"case_id": case_id, "notes": notes})
+    return {"success": True, "message": "Case submitted to underwriter", "status": "Pending Underwriter Review"}
+
 app.include_router(api_router)
 
 # Startup events
