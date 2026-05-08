@@ -1,5 +1,5 @@
 // GMC Platform - Demo Mode Active
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { Toaster } from "./components/ui/sonner";
 
@@ -17,7 +17,6 @@ import DataCorrectionPage from "./pages/DataCorrectionPage";
 import StructuredReviewPage from "./pages/StructuredReviewPage";
 import AIMatchReviewPage from "./pages/AIMatchReviewPage";
 import AIProcessingPage from "./pages/AIProcessingPage";
-import AIInsightsPage from "./pages/AIInsightsPage";
 import UnderwriterQueuePage from "./pages/UnderwriterQueuePage";
 import UnderwriterReviewPage from "./pages/UnderwriterReviewPage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
@@ -70,6 +69,12 @@ function PublicRoute({ children }) {
   return children;
 }
 
+// Redirect old /insights route to the unified case detail view
+function InsightsRedirect() {
+  const { caseId } = useParams();
+  return <Navigate to={`/cases/${caseId}`} replace />;
+}
+
 function AppRoutes() {
   return (
     <Routes>
@@ -88,7 +93,7 @@ function AppRoutes() {
       <Route path="/cases/:caseId/correction" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><DataCorrectionPage /></ProtectedRoute>} />
       <Route path="/cases/:caseId/review" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><StructuredReviewPage /></ProtectedRoute>} />
       <Route path="/cases/:caseId/processing" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><AIProcessingPage /></ProtectedRoute>} />
-      <Route path="/cases/:caseId/insights" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><AIInsightsPage /></ProtectedRoute>} />
+      <Route path="/cases/:caseId/insights" element={<ProtectedRoute><InsightsRedirect /></ProtectedRoute>} />
       <Route path="/cases/:caseId/ai-review" element={<ProtectedRoute allowedRoles={['agent', 'admin']}><AIMatchReviewPage /></ProtectedRoute>} />
 
       {/* Underwriter Routes */}

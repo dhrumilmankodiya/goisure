@@ -355,18 +355,18 @@ export default function AIInsightsPage() {
               <div>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">📈 Key Metrics</h3>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                  {[['Base Premium', fmtLac(underwriting_metrics.estimated_premium), 'blue'],
-                    ['Premium/Lac', fmt(underwriting_metrics.premium_per_lac || ''), 'blue'],
-                    ['Avg Age', `${underwriting_metrics.average_age || '—'} yrs`, 'purple'],
-                    ['Avg Claim Size', fmt(underwriting_metrics.average_claim_size), 'amber'],
-                    ['Chronic Members', `${underwriting_metrics.chronic_members_count || 0} (${underwriting_metrics.chronic_members_pct || 0}%)`, 'red'],
-                    ['Conc. Risk', `${underwriting_metrics.top_3_concentration_pct || 0}%`, 'red'],
-                    ['Emp/Dep Ratio', underwriting_metrics.employee_dependent_ratio || '—', 'gray'],
-                    ['Benchmark LR', `${underwriting_metrics.industry_benchmark || 65}%`, 'gray'],
-                    ['vs Benchmark', `${underwriting_metrics.lr_vs_industry_benchmark > 0 ? '+' : ''}${underwriting_metrics.lr_vs_industry_benchmark || 0}%`, underwriting_metrics.lr_vs_industry_benchmark > 0 ? 'red' : 'green'],
-                    ['Members w/ Claims', underwriting_metrics.members_with_claims || 0, 'gray'],
-                    ['Claim Freq.', `${underwriting_metrics.claims_frequency || 0}%`, 'gray'],
-                    ['Claim/Member', fmt(underwriting_metrics.claim_per_member), 'gray'],
+                  {[['Base Premium', fmtLac(metrics.estimated_premium), 'blue'],
+                    ['Premium/Lac', fmt(metrics.premium_per_lac || ''), 'blue'],
+                    ['Avg Age', `${metrics.average_age || '—'} yrs`, 'purple'],
+                    ['Avg Claim Size', fmt(metrics.average_claim_size), 'amber'],
+                    ['Chronic Members', `${metrics.chronic_members_count || 0} (${metrics.chronic_members_pct || 0}%)`, 'red'],
+                    ['Conc. Risk', `${metrics.top_3_concentration_pct || 0}%`, 'red'],
+                    ['Emp/Dep Ratio', metrics.employee_dependent_ratio || '—', 'gray'],
+                    ['Benchmark LR', `${metrics.industry_benchmark || 65}%`, 'gray'],
+                    ['vs Benchmark', `${metrics.lr_vs_industry_benchmark > 0 ? '+' : ''}${metrics.lr_vs_industry_benchmark || 0}%`, metrics.lr_vs_industry_benchmark > 0 ? 'red' : 'green'],
+                    ['Members w/ Claims', metrics.members_with_claims || 0, 'gray'],
+                    ['Claim Freq.', `${metrics.claims_frequency || 0}%`, 'gray'],
+                    ['Claim/Member', fmt(metrics.claim_per_member), 'gray'],
                   ].filter(m => m[1] && m[1] !== '—' && m[1] !== '₹').map(([label, value, color], i) => (
                     <div key={i} className="bg-gray-50 rounded-lg px-3 py-2.5 border border-gray-100">
                       <div className={`text-lg font-bold leading-tight ${
@@ -377,13 +377,13 @@ export default function AIInsightsPage() {
                   ))}
                 </div>
               </div>
-              {(underwriting_metrics.age_distribution || underwriting_metrics.gender_distribution) && (
+              {(metrics.age_distribution || metrics.gender_distribution) && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {underwriting_metrics.age_distribution && (
+                  {metrics.age_distribution && (
                     <div>
                       <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">👥 Age Distribution</h3>
                       <div className="space-y-1.5">
-                        {Object.entries(underwriting_metrics.age_distribution).map(([band, pct]) => (
+                        {Object.entries(metrics.age_distribution).map(([band, pct]) => (
                           <div key={band} className="flex items-center gap-2">
                             <span className="text-xs text-gray-600 w-12">{band}</span>
                             <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden"><div className="h-full rounded-full text-xs font-bold text-white flex items-center px-1 bg-blue-500" style={{ width: `${Math.max(4, Math.min(100, parseFloat(pct) * 3))}%` }} /></div>
@@ -393,11 +393,11 @@ export default function AIInsightsPage() {
                       </div>
                     </div>
                   )}
-                  {underwriting_metrics.gender_distribution && Object.keys(underwriting_metrics.gender_distribution).length > 0 && (
+                  {metrics.gender_distribution && Object.keys(metrics.gender_distribution).length > 0 && (
                     <div>
                       <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">⚧ Gender Distribution</h3>
                       <div className="space-y-1.5">
-                        {Object.entries(underwriting_metrics.gender_distribution).map(([gender, pct]) => (
+                        {Object.entries(metrics.gender_distribution).map(([gender, pct]) => (
                           <div key={gender} className="flex items-center gap-2"><span className="text-xs text-gray-600 w-12">{gender}</span>
                             <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden"><div className="h-full bg-purple-500 rounded-full" style={{ width: `${Math.max(4, Math.min(100, parseFloat(pct) * 2))}%` }} /></div>
                             <span className="text-xs font-semibold text-gray-700 w-12 text-right">{pct}%</span>
@@ -408,13 +408,13 @@ export default function AIInsightsPage() {
                   )}
                 </div>
               )}
-              {(underwriting_metrics.high_cost_claims?.length > 0 || underwriting_metrics.top_3_members?.length > 0) && (
+              {(metrics.high_cost_claims?.length > 0 || metrics.top_3_members?.length > 0) && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {underwriting_metrics.high_cost_claims?.length > 0 && (
+                  {metrics.high_cost_claims?.length > 0 && (
                     <div className="bg-red-50 border border-red-100 rounded-lg p-4">
                       <h3 className="text-sm font-bold text-red-700 mb-2">🚨 High-Cost Claims (₹5L+)</h3>
                       <div className="space-y-2">
-                        {(underwriting_metrics.high_cost_claims || []).slice(0, 3).map((c, i) => (
+                        {(metrics.high_cost_claims || []).slice(0, 3).map((c, i) => (
                           <div key={i} className="flex justify-between items-center text-sm">
                             <span className="text-gray-700 truncate flex-1 mr-2">{c.name || `Member ${i+1}`}</span>
                             <span className="font-bold text-red-700 whitespace-nowrap">{fmtLac(c.amount)}</span>
@@ -423,11 +423,11 @@ export default function AIInsightsPage() {
                       </div>
                     </div>
                   )}
-                  {underwriting_metrics.top_3_members?.length > 0 && (
+                  {metrics.top_3_members?.length > 0 && (
                     <div className="bg-amber-50 border border-amber-100 rounded-lg p-4">
                       <h3 className="text-sm font-bold text-amber-700 mb-2">📍 Top Claims Concentration</h3>
                       <div className="space-y-2">
-                        {(underwriting_metrics.top_3_members || []).map((m, i) => (
+                        {(metrics.top_3_members || []).map((m, i) => (
                           <div key={i} className="flex justify-between items-center text-sm">
                             <span className="text-gray-700 flex items-center gap-1.5">
                               {i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'} <span className="truncate">{m.name || `Rank ${i+1}`}</span>
