@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import Layout from '../components/Layout';
 
-const API = process.env.REACT_APP_API_URL || '';
+const API = process.env.REACT_APP_BACKEND_URL || '';
 
 export default function CaseDetailPage() {
   const { caseId } = useParams();
