@@ -1915,7 +1915,7 @@ Generate the merged data and AI insights.respond with JSON only."""
                 "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
                 "Age": member_age,
                 "Age_Band": age_band,
-                "Gender": e.get("Gender") or e.get("gender") or "",
+                "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
                 "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
                 "Department": e.get("Department") or e.get("department") or "",
                 "Sum_Insured": sum_ins,
@@ -1953,48 +1953,55 @@ Generate the merged data and AI insights.respond with JSON only."""
             if name and len(name) > 2:
                 enrollment_by_name[name] = e
 
-        # Also try partial name matching
+        # Enhanced matching with multi-signal approach
+        from difflib import SequenceMatcher
+
         def find_enrollment(claim):
-            # Try Employee_ID first (most reliable)
-            claim_emp_id = str(claim.get("Employee_ID") or claim.get("employee_id") or claim.get("EmpCode") or "").strip().upper()
-            if claim_emp_id and claim_emp_id in enrollment_by_emp_id:
-                return enrollment_by_emp_id[claim_emp_id], "emp_id"
-            
-            # Try exact name match
-            claim_name = str(claim.get("Patient_Name") or claim.get("Patient_name") or claim.get("PATIENT_NAME") or claim.get("Name") or claim.get("EmpName") or "").strip().upper()
-            if claim_name in enrollment_by_name:
+            # Signal 1: Exact name match (highest confidence)
+            claim_name = str(claim.get("Patient_Name") or claim.get("Patient_name") or
+                           claim.get("PATIENT_NAME") or claim.get("Name") or
+                           claim.get("EmpName") or "").strip().upper()
+            if claim_name and claim_name in enrollment_by_name:
                 return enrollment_by_name[claim_name], "name_exact"
-            
-            # Try partial name match - require first name match AND last name similarity
-            claim_parts = claim_name.split()
-            claim_first = claim_parts[0] if claim_parts else ""
-            claim_last = claim_parts[-1] if len(claim_parts) > 1 else ""
-            
-            best_match = None
-            best_score = 0
-            
-            for en_name, en_data in enrollment_by_name.items():
-                en_parts = en_name.split()
-                en_first = en_parts[0] if en_parts else ""
-                en_last = en_parts[-1] if len(en_parts) > 1 else ""
-                
-                # Require first name match for any partial match
-                if en_first and claim_first and en_first == claim_first:
-                    # Check last name similarity using SequenceMatcher
-                    from difflib import SequenceMatcher
-                    if en_last and claim_last:
-                        score = SequenceMatcher(None, en_last, claim_last).ratio()
-                        if score >= 0.6 and score > best_score:
-                            best_match = en_data
-                            best_score = score
-                    # If no last name but same first name and both are single-word names, match
-                    elif not en_last and not claim_last and en_first == claim_first:
-                        if len(en_name) > 3 and len(claim_name) > 3:
+
+            # Signal 2: Fuzzy name match with strong requirements
+            if claim_name and len(claim_name) >= 5:
+                claim_parts = claim_name.split()
+                claim_first = claim_parts[0] if claim_parts else ""
+                claim_last = claim_parts[-1] if len(claim_parts) > 1 else ""
+
+                best_match = None
+                best_score = 0
+
+                for en_name, en_data in enrollment_by_name.items():
+                    en_parts = en_name.split()
+                    en_first = en_parts[0] if en_parts else ""
+                    en_last = en_parts[-1] if len(en_parts) > 1 else ""
+
+                    # Must have same first name
+                    if en_first and claim_first and en_first == claim_first:
+                        if en_last and claim_last:
+                            score = SequenceMatcher(None, en_last, claim_last).ratio()
+                            if score >= 0.65 and score > best_score:
+                                best_match = en_data
+                                best_score = score
+                        elif not en_last and not claim_last and len(en_name) > 3:
                             best_match = en_data
                             best_score = 1.0
-            
-            if best_match:
-                return best_match, "name_partial"
+
+                if best_match:
+                    return best_match, "name_fuzzy"
+
+            # Signal 3: Name-in-ID (handles "BABU LAL MEENA" in "A21706BABU...")
+            # Only try for claims that have a name-like field
+            if claim_name and len(claim_name) >= 5:
+                for en_name, en_data in enrollment_by_name.items():
+                    en_parts = en_name.upper().split()
+                    for part in en_parts:
+                        if len(part) >= 5 and part in claim_name:
+                            # High specificity match
+                            return en_data, "name_in_id"
+
             return None, "none"
         
         # Merge claims with enrollment - PRESERVE FULL CLAIM DETAILS for risk analysis
@@ -2016,21 +2023,25 @@ Generate the merged data and AI insights.respond with JSON only."""
                 
                 # Enrich claim with full diagnostic/procedure details for underwriting
                 enriched = {
-                    "claim_id": str(c.get("CCN") or c.get("MDID") or c.get("TAC_Tran_ID") or c.get("Upload_ID") or ""),
+                    "claim_id": str(c.get("CLAIM_NUMBER") or c.get("GEN_Claim_Number") or c.get("CCN") or c.get("MDID") or ""),
                     "match_type": match_type,
-                    "date_of_admission": str(c.get("Date of admission") or c.get("FromDate") or ""),
-                    "date_of_discharge": str(c.get("DOD") or c.get("ToDate") or ""),
-                    "hospital_name": str(c.get("HospitlName") or ""),
-                    "hospital_city": str(c.get("HospCity") or ""),
-                    "treatment_type": str(c.get("TreatmentType") or c.get("Sec_Treat") or ""),
-                    "procedure_code": str(c.get("PCS_Code") or ""),
-                    "diagnosis_primary": str(c.get("Pdig") or c.get("ICD") or c.get("DiseaseCategory") or ""),
-                    "diagnosis_secondary": str(c.get("Pdig2") or c.get("ICD2") or ""),
-                    "diagnosis_tertiary": str(c.get("Pdig3") or c.get("ICD3") or ""),
+                    "date_of_admission": str(c.get("DATE_OF_ADMISSION") or c.get("Date of admission") or ""),
+                    "date_of_discharge": str(c.get("DATE_OF_DISCHARGE") or c.get("DOD") or ""),
+                    "hospital_name": str(c.get("HOSPITAL_NAME") or c.get("Hospital_Name") or ""),
+                    "hospital_city": str(c.get("CITY") or ""),
+                    "treatment_type": str(c.get("MODE_OF_CLAIM") or ""),
+                    "procedure_code": "",
+                    "diagnosis_primary": str(c.get("AILMENT") or c.get("DISEASE OR AILMENT") or c.get("AILMENT_ICD") or ""),
+                    "diagnosis_secondary": "",
+                    "diagnosis_tertiary": "",
                     "claim_amount": get_claim_amount(c),
-                    "approved_amount": get_claim_amount(c),
-                    "claim_status": str(c.get("Claim Status") or ""),
-                    "claim_type": str(c.get("Claim Type") or ""),
+                    "approved_amount": safe_float(c.get("NET_AMOUNT_PAID") or c.get("Incurred_Amount") or c.get("ChequeAmt") or get_claim_amount(c)),
+                    "claim_status": str(c.get("Final_Status") or c.get("STATUS") or ""),
+                    "claim_type": str(c.get("CATEGORY") or c.get("CLAIM_TYPE") or c.get("CLAIM_TYPE_1") or ""),
+                    "gender": str(c.get("GENDER") or ""),
+                    "age": c.get("AGE_OF_PATIENT") or 0,
+                    "relationship": str(c.get("RELNSHP_WITH_PRIMARY_INSURED") or ""),
+                    "employee_id": str(c.get("EMPLOYEE_ID") or ""),
                 }
                 
                 for k in keys:
@@ -2143,15 +2154,15 @@ Generate the merged data and AI insights.respond with JSON only."""
             if len(critical_procedures) > 0:
                 risk_flags.append(f"Medical procedures: {len(critical_procedures)} types")
             
-            # Age — try direct Age field first, then calculate from DOB
+            # Age — try direct Age field first, then calculate from DOB, then from claims
             member_age = 0
             try:
-                member_age = int(e.get("Age") or e.get("age") or 0)
+                member_age = int(e.get("AGE") or e.get("Age") or e.get("age") or 0)
             except:
                 member_age = 0
             if member_age == 0:
                 # Try to calculate from Date_of_Birth
-                dob = e.get("Date_of_Birth") or e.get("DOB") or e.get("dob") or ""
+                dob = e.get("Date_of_Birth") or e.get("DOB") or e.get("dob") or e.get("Date of birth") or ""
                 if dob:
                     try:
                         dob_date = datetime.strptime(str(dob)[:10], "%Y-%m-%d")
@@ -2159,6 +2170,11 @@ Generate the merged data and AI insights.respond with JSON only."""
                         member_age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
                     except:
                         pass
+            if member_age == 0 and claims_for_member:
+                # Fall back to average of claim ages for this member
+                claim_ages = [safe_float(c.get("age") or 0) for c in claims_for_member if c.get("age")]
+                if claim_ages:
+                    member_age = int(sum(claim_ages) / len(claim_ages))
             age_band = get_age_band(member_age)
             
             # Match Notion DB fields exactly
@@ -2167,7 +2183,7 @@ Generate the merged data and AI insights.respond with JSON only."""
                 "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
                 "Age": member_age,
                 "Age_Band": age_band,
-                "Gender": e.get("Gender") or e.get("gender") or "",
+                "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
                 "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
                 "Department": e.get("Department") or e.get("department") or "",
                 "Sum_Insured": e.get("Sum_Insured") or e.get("sum_insured") or e.get("Sum Insured") or 0,
@@ -2273,16 +2289,106 @@ Generate the merged data and AI insights.respond with JSON only."""
             }
         },
         "demographics": {
-            "gender_distribution": {"Male": int(matched_count_sd * 0.6), "Female": int(matched_count_sd * 0.4)},
+            "gender_distribution": {"Male": sum(1 for r in matched_records if str(r.get("Gender") or "").lower() in ["male","m"]), "Female": sum(1 for r in matched_records if str(r.get("Gender") or "").lower() in ["female","f"])},
             "total_enrolled": total_enrolled
         },
+        "claim_types": {},
         "risk_indicators": [],
         "recommendations": []
     }
     
+    # ── Compute claim-level analytics DIRECTLY from claims_data (no matching required)
+    # This ensures analytics always work even when enrollment matching fails
+    from collections import Counter
+    
+    gender_map = {"Male": 0, "Female": 0, "Other": 0}
+    for c in claims_data:
+        g = str(c.get("GENDER") or "").strip()
+        if g in ["M", "m"]: gender_map["Male"] += 1
+        elif g in ["F", "f"]: gender_map["Female"] += 1
+        else: gender_map["Other"] += 1
+    
+    claim_age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
+    for c in claims_data:
+        a = c.get("AGE_OF_PATIENT") or 0
+        if a <= 25: claim_age_bands["18-25"] += 1
+        elif a <= 35: claim_age_bands["26-35"] += 1
+        elif a <= 45: claim_age_bands["36-45"] += 1
+        elif a <= 55: claim_age_bands["46-55"] += 1
+        else: claim_age_bands["55+"] += 1
+    
+    # Use claim-level gender if matched gender is all zeros
+    if sum(analytics["demographics"]["gender_distribution"].values()) == 0:
+        analytics["demographics"]["gender_distribution"] = gender_map
+    
+    # Claim type breakdown from AILMENT field
+    ailment_counter = Counter()
+    for c in claims_data:
+        a = c.get("AILMENT") or c.get("DISEASE OR AILMENT") or "Unknown"
+        if len(a) > 80:
+            a = a[:80]
+        ailment_counter[a] += 1
+    
+    # Merge into existing claim_types (from matched records first, then add unmatched)
+    claim_type_counter = Counter()
+    if matched_records:
+        for r in matched_records:
+            for cd in r.get("claims_detail", []):
+                t = cd.get("diagnosis_primary") or cd.get("claim_type") or "Unknown"
+                if t:
+                    claim_type_counter[t] = claim_type_counter.get(t, 0) + 1
+    if not claim_type_counter:
+        claim_type_counter = ailment_counter
+    else:
+        for k, v in ailment_counter.items():
+            claim_type_counter[k] = claim_type_counter.get(k, 0) + v
+    
+    # Update analytics with complete data
+    analytics["claim_types"] = {k: v for k, v in sorted(claim_type_counter.items(), key=lambda x: -x[1])[:20]}
+    
+    # Status breakdown from Final_Status field
+    status_breakdown = Counter()
+    for c in claims_data:
+        s = c.get("Final_Status") or c.get("STATUS") or "Unknown"
+        status_breakdown[s] += 1
+    analytics["claims_analysis"]["status_breakdown"] = dict(status_breakdown)
+    
+    # Mode of claim breakdown
+    mode_breakdown = Counter()
+    for c in claims_data:
+        m = c.get("MODE_OF_CLAIM") or "Unknown"
+        mode_breakdown[m] += 1
+    analytics["mode_of_claim"] = dict(mode_breakdown)
+    
+    # Hospital type breakdown
+    ht_breakdown = Counter()
+    for c in claims_data:
+        ht = c.get("HOSPITAL_TYPE") or "Unknown"
+        ht_breakdown[ht] += 1
+    analytics["hospital_type"] = dict(ht_breakdown)
+    
+    # ── Build age_distribution from matched records
+    age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
+    for r in matched_records:
+        band = r.get("Age_Band")
+        if band in age_bands:
+            age_bands[band] += 1
+        elif r.get("Age"):
+            a = int(r.get("Age", 0))
+            if a <= 25: age_bands["18-25"] += 1
+            elif a <= 35: age_bands["26-35"] += 1
+            elif a <= 45: age_bands["36-45"] += 1
+            elif a <= 55: age_bands["46-55"] += 1
+            else: age_bands["55+"] += 1
+    # If no matched records have age data, use claim-level age
+    if sum(age_bands.values()) == 0:
+        age_bands = claim_age_bands
+    analytics["demographics"]["age_distribution"] = age_bands
+    analytics["demographics"]["age_distribution"] = age_bands
+    
     # ── Generate Underwriting Analysis & 3 Premium Versions ──
     try:
-        metrics = calculate_underwriting_metrics(structured_data, key_stats)
+        metrics = calculate_underwriting_metrics(structured_data, key_stats, claims_data)
         risk_score = calculate_risk_score(metrics)
         factors = generate_underwriting_factors(metrics, risk_score)
         impact = calculate_premium_impact(metrics, factors)
@@ -2931,9 +3037,10 @@ class UnderwritingInput(BaseModel):
     policy_type: str = "GMC"
 
 
-def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict) -> Dict:
-    """Calculate all underwriting metrics from structured data"""
+def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict, claims_data: List[Dict] = None) -> Dict:
+    """Calculate all underwriting metrics from structured data and claims data"""
     import statistics
+    from collections import Counter
     
     total_enrolled = key_stats.get("total_enrolled", len(structured_data))
     total_claims = key_stats.get("total_claims", 0)
@@ -2943,7 +3050,7 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
     estimated_premium = total_claimed * 1.5 if total_claimed > 0 else 100000
     loss_ratio = (total_claimed / estimated_premium * 100) if estimated_premium > 0 else 0
     
-    # Age distribution
+    # Age distribution — compute from structured_data AND claims_data fallback
     ages = []
     for rec in structured_data:
         if rec.get("Age"):
@@ -2952,7 +3059,15 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
             except:
                 pass
     
-    avg_age = statistics.mean(ages) if ages else 30
+    # If no ages from structured_data, use claims_data AGE_OF_PATIENT
+    if not ages and claims_data:
+        for c in claims_data:
+            a = c.get("AGE_OF_PATIENT")
+            if a and isinstance(a, (int, float)) and a > 0:
+                ages.append(int(a))
+    
+    avg_age = round(statistics.mean(ages), 1) if ages else 30
+    
     age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
     for age in ages:
         if age < 26:
@@ -2967,24 +3082,36 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
             age_bands["55+"] += 1
     
     # Convert to percentages
-    for band in age_bands:
-        age_bands[band] = round(age_bands[band] / len(ages) * 100, 1) if ages else 0
+    if ages:
+        total_aged = len(ages)
+        age_bands = {band: round(count / total_aged * 100, 1) for band, count in age_bands.items()}
     
-    # Claims frequency
-    members_with_claims = len([r for r in structured_data if r.get("Claim_Count", 0) > 0])
-    claims_frequency = (members_with_claims / total_enrolled * 100) if total_enrolled else 0
+    # Claims frequency — from claims_data directly
+    if claims_data:
+        members_with_claims_count = len(set(c.get("EMPLOYEE_ID") or c.get("MEMBERSHIP_NUMBER") or "" for c in claims_data if c.get("EMPLOYEE_ID") or c.get("MEMBERSHIP_NUMBER")))
+        claims_frequency = round(members_with_claims_count / total_enrolled * 100, 2) if total_enrolled else 0
+    else:
+        members_with_claims_count = len([r for r in structured_data if r.get("Claim_Count", 0) > 0])
+        claims_frequency = (members_with_claims_count / total_enrolled * 100) if total_enrolled else 0
     
     # Average claim size
     avg_claim_size = (total_claimed / total_claims) if total_claims else 0
     
-    # Claim status breakdown
+    # Claim status breakdown — from claims_data Final_Status
     claim_status = {"Pending": 0, "Paid": 0, "Rejected": 0}
-    for rec in structured_data:
-        status = rec.get("Claim_Status", "")
-        if status:
-            status = str(status).strip().title()
-            if status in claim_status:
-                claim_status[status] += 1
+    if claims_data:
+        for c in claims_data:
+            s = c.get("Final_Status") or c.get("STATUS") or ""
+            if "paid" in str(s).lower(): claim_status["Paid"] += 1
+            elif "repudi" in str(s).lower(): claim_status["Rejected"] += 1
+            else: claim_status["Pending"] += 1
+    else:
+        for rec in structured_data:
+            status = rec.get("Claim_Status", "")
+            if status:
+                status = str(status).strip().title()
+                if status in claim_status:
+                    claim_status[status] += 1
     
     # High cost claims (above ₹5L)
     high_cost_claims = []
@@ -3010,19 +3137,31 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
             family_sizes.append(1)
     avg_family_size = statistics.mean(family_sizes) if family_sizes else 1
     
-    # ── NEW: Enhanced metrics ──
+    # ── Enhanced metrics from claims_data ──
     # Chronic/pre-existing conditions
     chronic_members = [r for r in structured_data if r.get("Chronic_Condition")]
     chronic_members_count = len(chronic_members)
     chronic_members_pct = round(chronic_members_count / max(total_enrolled, 1) * 100, 1)
     
-    # Gender distribution
+    # Gender distribution — from structured_data AND claims_data fallback
     gender_dist = {"Male": 0, "Female": 0, "Other": 0}
     for r in structured_data:
-        g = str(r.get("Gender", "")).strip().title()
-        if g in gender_dist:
-            gender_dist[g] += 1
+        g = str(r.get("Gender", "")).strip()
+        if g.lower() in ["male", "m"]: gender_dist["Male"] += 1
+        elif g.lower() in ["female", "f"]: gender_dist["Female"] += 1
+        else: gender_dist["Other"] += 1
+    
+    # If no gender from structured_data, use claims_data GENDER
+    if gender_dist["Male"] == 0 and gender_dist["Female"] == 0 and claims_data:
+        for c in claims_data:
+            g = str(c.get("GENDER") or "").strip()
+            if g == "M": gender_dist["Male"] += 1
+            elif g == "F": gender_dist["Female"] += 1
+    
     gender_distribution = {k: round(v / max(total_enrolled, 1) * 100, 1) for k, v in gender_dist.items()}
+    # If percentages are all 0 (because gender_dist has raw counts not scaled), use raw counts
+    if gender_distribution["Male"] == 0 and gender_distribution["Female"] == 0:
+        gender_distribution = {"Male": gender_dist["Male"], "Female": gender_dist["Female"], "Other": gender_dist["Other"]}
     
     # Claim concentration (top 3 members as % of total)
     member_claim_totals = sorted(
@@ -3056,7 +3195,7 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
         "age_distribution": age_bands,
         "claims_frequency": round(claims_frequency, 2),
         "average_claim_size": round(avg_claim_size, 2),
-        "members_with_claims": members_with_claims,
+        "members_with_claims": members_with_claims_count,
         "claim_status_breakdown": claim_status,
         "high_cost_claims": sorted(high_cost_claims, key=lambda x: x["amount"], reverse=True)[:5],
         "employee_dependent_ratio": round(emp_dependent_ratio, 2),
@@ -3413,7 +3552,7 @@ async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None,
                 "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
                 "Age": member_age,
                 "Age_Band": age_band,
-                "Gender": e.get("Gender") or e.get("gender") or "",
+                "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
                 "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
                 "Department": e.get("Department") or e.get("department") or "",
                 "Sum_Insured": sum_ins,
@@ -3432,7 +3571,7 @@ async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None,
         raise HTTPException(status_code=400, detail="Run Part A (Process AI) first")
     
     # Calculate underwriting metrics
-    metrics = calculate_underwriting_metrics(structured_data, key_stats)
+    metrics = calculate_underwriting_metrics(structured_data, key_stats, claims_data)
     
     # If premium provided, recalculate with actual
     if data and data.premium > 0:
@@ -4448,9 +4587,10 @@ class UnderwritingInput(BaseModel):
     policy_type: str = "GMC"
 
 
-def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict) -> Dict:
-    """Calculate all underwriting metrics from structured data"""
+def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict, claims_data: List[Dict] = None) -> Dict:
+    """Calculate all underwriting metrics from structured data and claims data"""
     import statistics
+    from collections import Counter
     
     total_enrolled = key_stats.get("total_enrolled", len(structured_data))
     total_claims = key_stats.get("total_claims", 0)
@@ -4460,7 +4600,7 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
     estimated_premium = total_claimed * 1.5 if total_claimed > 0 else 100000
     loss_ratio = (total_claimed / estimated_premium * 100) if estimated_premium > 0 else 0
     
-    # Age distribution
+    # Age distribution — compute from structured_data AND claims_data fallback
     ages = []
     for rec in structured_data:
         if rec.get("Age"):
@@ -4469,7 +4609,15 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
             except:
                 pass
     
-    avg_age = statistics.mean(ages) if ages else 30
+    # If no ages from structured_data, use claims_data AGE_OF_PATIENT
+    if not ages and claims_data:
+        for c in claims_data:
+            a = c.get("AGE_OF_PATIENT")
+            if a and isinstance(a, (int, float)) and a > 0:
+                ages.append(int(a))
+    
+    avg_age = round(statistics.mean(ages), 1) if ages else 30
+    
     age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
     for age in ages:
         if age < 26:
@@ -4484,24 +4632,36 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
             age_bands["55+"] += 1
     
     # Convert to percentages
-    for band in age_bands:
-        age_bands[band] = round(age_bands[band] / len(ages) * 100, 1) if ages else 0
+    if ages:
+        total_aged = len(ages)
+        age_bands = {band: round(count / total_aged * 100, 1) for band, count in age_bands.items()}
     
-    # Claims frequency
-    members_with_claims = len([r for r in structured_data if r.get("Claim_Count", 0) > 0])
-    claims_frequency = (members_with_claims / total_enrolled * 100) if total_enrolled else 0
+    # Claims frequency — from claims_data directly
+    if claims_data:
+        members_with_claims_count = len(set(c.get("EMPLOYEE_ID") or c.get("MEMBERSHIP_NUMBER") or "" for c in claims_data if c.get("EMPLOYEE_ID") or c.get("MEMBERSHIP_NUMBER")))
+        claims_frequency = round(members_with_claims_count / total_enrolled * 100, 2) if total_enrolled else 0
+    else:
+        members_with_claims_count = len([r for r in structured_data if r.get("Claim_Count", 0) > 0])
+        claims_frequency = (members_with_claims_count / total_enrolled * 100) if total_enrolled else 0
     
     # Average claim size
     avg_claim_size = (total_claimed / total_claims) if total_claims else 0
     
-    # Claim status breakdown
+    # Claim status breakdown — from claims_data Final_Status
     claim_status = {"Pending": 0, "Paid": 0, "Rejected": 0}
-    for rec in structured_data:
-        status = rec.get("Claim_Status", "")
-        if status:
-            status = str(status).strip().title()
-            if status in claim_status:
-                claim_status[status] += 1
+    if claims_data:
+        for c in claims_data:
+            s = c.get("Final_Status") or c.get("STATUS") or ""
+            if "paid" in str(s).lower(): claim_status["Paid"] += 1
+            elif "repudi" in str(s).lower(): claim_status["Rejected"] += 1
+            else: claim_status["Pending"] += 1
+    else:
+        for rec in structured_data:
+            status = rec.get("Claim_Status", "")
+            if status:
+                status = str(status).strip().title()
+                if status in claim_status:
+                    claim_status[status] += 1
     
     # High cost claims (above ₹5L)
     high_cost_claims = []
@@ -4527,19 +4687,31 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
             family_sizes.append(1)
     avg_family_size = statistics.mean(family_sizes) if family_sizes else 1
     
-    # ── NEW: Enhanced metrics ──
+    # ── Enhanced metrics from claims_data ──
     # Chronic/pre-existing conditions
     chronic_members = [r for r in structured_data if r.get("Chronic_Condition")]
     chronic_members_count = len(chronic_members)
     chronic_members_pct = round(chronic_members_count / max(total_enrolled, 1) * 100, 1)
     
-    # Gender distribution
+    # Gender distribution — from structured_data AND claims_data fallback
     gender_dist = {"Male": 0, "Female": 0, "Other": 0}
     for r in structured_data:
-        g = str(r.get("Gender", "")).strip().title()
-        if g in gender_dist:
-            gender_dist[g] += 1
+        g = str(r.get("Gender", "")).strip()
+        if g.lower() in ["male", "m"]: gender_dist["Male"] += 1
+        elif g.lower() in ["female", "f"]: gender_dist["Female"] += 1
+        else: gender_dist["Other"] += 1
+    
+    # If no gender from structured_data, use claims_data GENDER
+    if gender_dist["Male"] == 0 and gender_dist["Female"] == 0 and claims_data:
+        for c in claims_data:
+            g = str(c.get("GENDER") or "").strip()
+            if g == "M": gender_dist["Male"] += 1
+            elif g == "F": gender_dist["Female"] += 1
+    
     gender_distribution = {k: round(v / max(total_enrolled, 1) * 100, 1) for k, v in gender_dist.items()}
+    # If percentages are all 0 (because gender_dist has raw counts not scaled), use raw counts
+    if gender_distribution["Male"] == 0 and gender_distribution["Female"] == 0:
+        gender_distribution = {"Male": gender_dist["Male"], "Female": gender_dist["Female"], "Other": gender_dist["Other"]}
     
     # Claim concentration (top 3 members as % of total)
     member_claim_totals = sorted(
@@ -4573,7 +4745,7 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict)
         "age_distribution": age_bands,
         "claims_frequency": round(claims_frequency, 2),
         "average_claim_size": round(avg_claim_size, 2),
-        "members_with_claims": members_with_claims,
+        "members_with_claims": members_with_claims_count,
         "claim_status_breakdown": claim_status,
         "high_cost_claims": sorted(high_cost_claims, key=lambda x: x["amount"], reverse=True)[:5],
         "employee_dependent_ratio": round(emp_dependent_ratio, 2),
@@ -4930,7 +5102,7 @@ async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None,
                 "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
                 "Age": member_age,
                 "Age_Band": age_band,
-                "Gender": e.get("Gender") or e.get("gender") or "",
+                "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
                 "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
                 "Department": e.get("Department") or e.get("department") or "",
                 "Sum_Insured": sum_ins,
@@ -4949,7 +5121,7 @@ async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None,
         raise HTTPException(status_code=400, detail="Run Part A (Process AI) first")
     
     # Calculate underwriting metrics
-    metrics = calculate_underwriting_metrics(structured_data, key_stats)
+    metrics = calculate_underwriting_metrics(structured_data, key_stats, claims_data)
     
     # If premium provided, recalculate with actual
     if data and data.premium > 0:
