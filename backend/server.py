@@ -1766,8 +1766,7 @@ Generate the merged data and AI insights.respond with JSON only."""
                     "https://ollama.com/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "Ollama-Version": "2024-12-09"
+                        "Content-Type": "application/json"
                     },
                     json={
                         "model": "gemma3:27b",
@@ -1783,20 +1782,22 @@ Generate the merged data and AI insights.respond with JSON only."""
                     if resp.status == 200:
                         result = await resp.json()
                         content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                        logger.info(f"Ollama response received: {len(content)} chars")
                         
                         # Try to parse JSON from response
                         try:
-                            # Find JSON in response
                             json_start = content.find('{')
                             json_end = content.rfind('}') + 1
                             if json_start >= 0 and json_end > json_start:
                                 ai_result = json.loads(content[json_start:json_end])
                                 ai_insights = ai_result.get("insights", [])
                                 structured_data = ai_result.get("structured_data", [])
-                        except json.JSONDecodeError:
-                            logger.warning("Failed to parse AI JSON response")
+                                logger.info(f"AI parsed: {len(ai_insights)} insights, {len(structured_data)} members")
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse AI JSON response: {e}, content preview: {content[:200]}")
                     else:
-                        logger.warning(f"Ollama Cloud Gemma 4 API returned status {resp.status}")
+                        body = await resp.text()
+                        logger.warning(f"Ollama Cloud Gemma 4 API returned status {resp.status}: {body[:500]}")
         except Exception as e:
             logger.warning(f"AI processing failed: {e}")
     
@@ -2024,8 +2025,8 @@ Generate the merged data and AI insights.respond with JSON only."""
                     "diagnosis_primary": str(c.get("Pdig") or c.get("ICD") or c.get("DiseaseCategory") or ""),
                     "diagnosis_secondary": str(c.get("Pdig2") or c.get("ICD2") or ""),
                     "diagnosis_tertiary": str(c.get("Pdig3") or c.get("ICD3") or ""),
-                    "claim_amount": safe_float(c.get("Claimed Amount") or c.get("Incurred Amount")),
-                    "approved_amount": safe_float(c.get("Amount_Claimed") or c.get("Total_Amount_Claimed") or c.get("Net_Amount_paid_Including_GST_After_TDS")),
+                    "claim_amount": get_claim_amount(c),
+                    "approved_amount": get_claim_amount(c),
                     "claim_status": str(c.get("Claim Status") or ""),
                     "claim_type": str(c.get("Claim Type") or ""),
                 }
