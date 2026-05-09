@@ -1,0 +1,452 @@
+
+"""
+Case Detail API - Enhanced for redesigned Case Detail page
+Provides comprehensive case data, workflow state, and resume capabilities
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional, List
+from datetime import datetime
+from bson import ObjectId
+import json
+
+from server import db, get_current_user
+
+router = APIRouter()
+
+
+@router.get("/cases/{case_id}/detail")
+async def get_case_detail(
+    case_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get complete case data for detail view.
+    Returns all sections: case info, enrollment, claims, matching, analytics, insights, workflow
+    """
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    # Access control
+    if current_user["role"] == "agent" and case.get("agent_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Build comprehensive response
+    enrollment_data = case.get("mapped_data") or case.get("raw_data") or case.get("enrollment_data", [])
+    claims_data = case.get("claims_data", [])
+    match_results = case.get("match_results", [])
+    structured_data = case.get("structured_data", [])
+    analytics = case.get("analytics", {})
+    metrics = case.get("metrics", {})
+    ai_insights = case.get("ai_insights", [])
+    impact = case.get("impact", {})
+    
+    # Calculate derived fields
+    total_enrolled = len(enrollment_data)
+    total_claims = len(claims_data)
+    matched_count = case.get("matched_count", len([m for m in match_results if m.get("matched_enrollment_id")]))
+    unmatched_count = total_claims - matched_count
+    
+    # Financials
+    total_claimed = sum(
+        float(str(c.get("Claimed Amount") or c.get("ClaimAmount") or c.get("amount") or 0).replace(",", ""))
+        for c in claims_data
+    )
+    
+    # Determine workflow state
+    status = case.get("status", "draft")
+    workflow = case.get("workflow", {})
+    
+    # Define workflow steps
+    steps = [
+        {"key": "upload", "label": "Upload", "completed": bool(enrollment_data and claims_data)},
+        {"key": "matching", "label": "Matching", "completed": status in ["ai_processed", "underwriter_review", "completed"]},
+        {"key": "ai_process", "label": "AI Process", "completed": status in ["ai_processed", "underwriter_review", "completed"]},
+        {"key": "underwriter", "label": "Underwriter", "completed": status in ["underwriter_review", "completed"]},
+        {"key": "completed", "label": "Completed", "completed": status == "completed"},
+    ]
+    
+    completed_steps = [s["key"] for s in steps if s["completed"]]
+    pending_steps = [s["key"] for s in steps if not s["completed"]]
+    current_step = pending_steps[0] if pending_steps else completed_steps[-1]
+    
+    # Determine next action
+    next_action = _get_next_action(status, matched_count, total_claims)
+    
+    # Build risk indicators
+    risk_indicators = _build_risk_indicators(structured_data, metrics)
+    
+    # Build recommendations
+    recommendations = _build_recommendations(metrics, impact)
+    
+    response = {
+        "case": {
+            "case_id": case.get("case_id"),
+            "client_name": case.get("client_name"),
+            "policy_type": case.get("policy_type"),
+            "business_type": case.get("business_type"),
+            "industry": case.get("industry"),
+            "employee_count": case.get("employee_count"),
+            "coverage_level": case.get("coverage_level"),
+            "status": status,
+            "created_at": case.get("created_at"),
+            "updated_at": case.get("updated_at"),
+            "notes": case.get("notes", ""),
+        },
+        "enrollment": {
+            "total_count": total_enrolled,
+            "data": enrollment_data,
+            "columns": list(enrollment_data[0].keys()) if enrollment_data else [],
+            "summary": {
+                "average_age": metrics.get("average_age", 0),
+                "gender_distribution": metrics.get("gender_distribution", {}),
+                "average_sum_insured": metrics.get("average_sum_insured", 0),
+            }
+        },
+        "claims": {
+            "total_count": total_claims,
+            "total_claimed": total_claimed,
+            "total_approved": sum(float(str(c.get("Amount_Claimed") or c.get("Total_Approved") or 0).replace(",", "")) for c in claims_data),
+            "data": claims_data,
+            "columns": list(claims_data[0].keys()) if claims_data else [],
+            "matched_count": matched_count,
+            "unmatched_count": unmatched_count,
+            "match_rate": round(matched_count / total_claims * 100, 1) if total_claims else 0,
+        },
+        "matching": {
+            "status": "completed" if match_results else "pending",
+            "match_rate": round(matched_count / total_claims * 100, 1) if total_claims else 0,
+            "total_matches": matched_count,
+            "match_results": match_results,
+            "quality": {
+                "score": metrics.get("match_quality", {}).get("quality_score", 0) if isinstance(metrics.get("match_quality"), dict) else 0,
+                "rating": metrics.get("match_quality", {}).get("quality_rating", "N/A") if isinstance(metrics.get("match_quality"), dict) else "N/A",
+            },
+        },
+        "analytics": analytics,
+        "metrics": metrics,
+        "insights": {
+            "ai_insights": ai_insights,
+            "risk_indicators": risk_indicators,
+            "recommendations": recommendations,
+            "top_risks": risk_indicators[:5],
+            "top_opportunities": recommendations[:3],
+        },
+        "underwriting": {
+            "premium_impact": impact,
+            "loss_ratio": metrics.get("loss_ratio", 0),
+            "estimated_premium": metrics.get("estimated_premium", 0),
+            "recommended_tier": metrics.get("recommended_coverage_tier", ""),
+            "key_stats": case.get("key_stats", {}),
+        },
+        "workflow": {
+            "current_step": current_step,
+            "next_step": pending_steps[1] if len(pending_steps) > 1 else None,
+            "completed_steps": completed_steps,
+            "pending_steps": pending_steps,
+            "steps": steps,
+            "next_action": next_action,
+            "can_resume": bool(pending_steps),
+            "progress_percentage": int(len(completed_steps) / len(steps) * 100),
+        },
+        "can_edit": current_user["role"] in ["admin", "agent"],
+        "can_submit": status in ["ai_processed"] and current_user["role"] in ["admin", "agent"],
+    }
+    
+    return response
+
+
+def _get_next_action(status: str, matched_count: int, total_claims: int) -> dict:
+    """Determine the next recommended action based on case status"""
+    if status == "draft" or status == "uploaded":
+        if total_claims == 0:
+            return {"action": "upload_claims", "label": "Upload Claims", "priority": "high"}
+        return {"action": "run_matching", "label": "Run AI Matching", "priority": "high"}
+    elif status == "matching":
+        return {"action": "run_matching", "label": "Complete Matching", "priority": "high"}
+    elif status == "ai_processed":
+        return {"action": "submit_underwriter", "label": "Submit to Underwriter", "priority": "high"}
+    elif status == "underwriter_review":
+        return {"action": "review_pending", "label": "Awaiting Underwriter Review", "priority": "medium"}
+    elif status == "completed":
+        return {"action": "generate_report", "label": "Generate Final Report", "priority": "low"}
+    
+    return {"action": "view", "label": "View Details", "priority": "low"}
+
+
+def _build_risk_indicators(structured_data: list, metrics: dict) -> list:
+    """Build risk indicator list from structured data and metrics"""
+    indicators = []
+    
+    # Loss ratio risk
+    loss_ratio = metrics.get("loss_ratio", 0)
+    if loss_ratio > 70:
+        indicators.append({
+            "type": "high_risk",
+            "category": "Financial",
+            "title": "High Loss Ratio",
+            "value": f"{loss_ratio}%",
+            "severity": "high",
+            "description": f"Loss ratio of {loss_ratio}% exceeds threshold",
+        })
+    elif loss_ratio > 50:
+        indicators.append({
+            "type": "medium_risk",
+            "category": "Financial",
+            "title": "Elevated Loss Ratio",
+            "value": f"{loss_ratio}%",
+            "severity": "medium",
+            "description": f"Loss ratio of {loss_ratio}% is moderate",
+        })
+    
+    # High-cost claims
+    high_cost_members = [m for m in structured_data if m.get("Total_Claimed", 0) > 100000]
+    if high_cost_members:
+        indicators.append({
+            "type": "risk",
+            "category": "Claims",
+            "title": "High-Cost Claims",
+            "value": len(high_cost_members),
+            "severity": "medium",
+            "description": f"{len(high_cost_members)} members with claims > ₹100k",
+        })
+    
+    # Chronic conditions
+    chronic_count = sum(1 for m in structured_data if m.get("Chronic_Condition"))
+    if chronic_count > 0:
+        indicators.append({
+            "type": "information",
+            "category": "Health",
+            "title": "Chronic Conditions",
+            "value": chronic_count,
+            "severity": "low",
+            "description": f"{chronic_count} members with pre-existing conditions",
+        })
+    
+    # Claim frequency
+    high_freq_members = [m for m in structured_data if m.get("Claim_Count", 0) > 3]
+    if high_freq_members:
+        indicators.append({
+            "type": "risk",
+            "category": "Claims",
+            "title": "High Claim Frequency",
+            "value": len(high_freq_members),
+            "severity": "medium",
+            "description": f"{len(high_freq_members)} members with >3 claims",
+        })
+    
+    return indicators
+
+
+def _build_recommendations(metrics: dict, impact: dict) -> list:
+    """Build recommendation list"""
+    recommendations = []
+    
+    # Premium recommendation
+    change_pct = impact.get("change_percent", 0)
+    if change_pct > 10:
+        recommendations.append({
+            "type": "action",
+            "category": "Premium",
+            "title": "Increase Premium",
+            "description": f"Recommended increase of {change_pct}% based on loss ratio",
+            "priority": "high",
+        })
+    elif change_pct < -10:
+        recommendations.append({
+            "type": "action",
+            "category": "Premium",
+            "title": "Decrease Premium",
+            "description": f"Potential decrease of {abs(change_pct)}% available",
+            "priority": "medium",
+        })
+    
+    # Coverage tier
+    tier = metrics.get("recommended_coverage_tier", "")
+    if tier:
+        recommendations.append({
+            "type": "information",
+            "category": "Coverage",
+            "title": "Recommended Coverage Tier",
+            "description": f"{tier} tier recommended based on risk profile",
+            "priority": "medium",
+        })
+    
+    # Loss ratio comment
+    loss_ratio = metrics.get("loss_ratio", 0)
+    if loss_ratio > 60:
+        recommendations.append({
+            "type": "warning",
+            "category": "Risk",
+            "title": "High Loss Ratio Alert",
+            "description": "Consider risk mitigation strategies for portfolio",
+            "priority": "high",
+        })
+    elif loss_ratio < 30:
+        recommendations.append({
+            "type": "opportunity",
+            "category": "Risk",
+            "title": "Strong Portfolio Performance",
+            "description": "Low loss ratio indicates good risk selection",
+            "priority": "low",
+        })
+    
+    return recommendations
+
+
+@router.post("/cases/{case_id}/save-draft")
+async def save_case_draft(
+    case_id: str,
+    data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Save case draft state (auto-save or manual save)
+    """
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if current_user["role"] == "agent" and case.get("agent_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    update_data = {
+        "$set": {
+            "workflow.auto_save.data": data.get("data"),
+            "workflow.auto_save.timestamp": datetime.now().isoformat(),
+            "workflow.last_action": datetime.now().isoformat(),
+        }
+    }
+    
+    # Update status if provided
+    if data.get("step"):
+        update_data["$set"]["status"] = data["step"]
+    
+    await db.cases.update_one({"case_id": case_id}, update_data)
+    
+    return {
+        "success": True,
+        "saved_at": datetime.now().isoformat(),
+        "step": data.get("step"),
+    }
+
+
+@router.get("/cases/{case_id}/resume")
+async def get_resume_point(
+    case_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Determine where to resume in workflow
+    """
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if current_user["role"] == "agent" and case.get("agent_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    status = case.get("status", "draft")
+    enrollment_data = case.get("mapped_data") or case.get("raw_data") or case.get("enrollment_data", [])
+    claims_data = case.get("claims_data", [])
+    match_results = case.get("match_results", [])
+    
+    # Determine next step
+    if not enrollment_data and not claims_data:
+        next_step = "upload"
+        reason = "No data uploaded yet"
+    elif not claims_data:
+        next_step = "upload_claims"
+        reason = "Enrollment uploaded, waiting for claims"
+    elif not match_results:
+        next_step = "match"
+        reason = "Claims uploaded, ready for matching"
+    elif status in ["matching", "uploaded"]:
+        next_step = "ai_process"
+        reason = "Matching complete, ready for AI processing"
+    elif status == "ai_processed":
+        next_step = "underwriter"
+        reason = "AI processing complete, ready for underwriter review"
+    else:
+        next_step = "completed"
+        reason = "Case processing complete"
+    
+    return {
+        "next_step": next_step,
+        "reason": reason,
+        "current_status": status,
+        "available_data": {
+            "has_enrollment": bool(enrollment_data),
+            "has_claims": bool(claims_data),
+            "has_matches": bool(match_results),
+        }
+    }
+
+
+@router.post("/cases/{case_id}/auto-save")
+async def auto_save_case_field(
+    case_id: str,
+    field_data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Auto-save individual field changes
+    """
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if current_user["role"] == "agent" and case.get("agent_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    field = field_data.get("field")
+    value = field_data.get("value")
+    
+    if not field:
+        raise HTTPException(status_code=400, detail="Field name required")
+    
+    await db.cases.update_one(
+        {"case_id": case_id},
+        {"$set": {
+            f"workflow.auto_save.fields.{field}": value,
+            "workflow.auto_save.timestamp": datetime.now().isoformat(),
+        }}
+    )
+    
+    return {
+        "success": True,
+        "timestamp": datetime.now().isoformat(),
+        "field": field,
+    }
+
+
+@router.get("/cases/{case_id}/export")
+async def export_case(
+    case_id: str,
+    format: str = Query("pdf", enum=["pdf", "xlsx", "csv"]),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Export case data in specified format
+    Note: Full implementation would generate actual file
+    """
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    if current_user["role"] == "agent" and case.get("agent_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Note: In production, would use libraries like:
+    # - reportlab/weasyprint for PDF
+    # - openpyxl/xlsxwriter for XLSX
+    # - csv module for CSV
+    
+    return {
+        "success": True,
+        "format": format,
+        "case_id": case_id,
+        "download_url": f"/api/cases/{case_id}/export/{format}",
+        "note": "File generation would be implemented here",
+    }

@@ -1,0 +1,73 @@
+
+// useCaseData Hook - Fetch and auto-refresh case data
+
+import { useState, useEffect, useCallback } from 'react';
+import api from '../lib/api';
+
+interface UseCaseDataOptions {
+  autoRefresh?: boolean;
+  refreshInterval?: number;
+}
+
+export default function useCaseData(
+  caseId: string | undefined,
+  options: UseCaseDataOptions = {}
+) {
+  const [caseData, setCaseData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const {
+    autoRefresh = false,
+    refreshInterval = 30000,
+  } = options;
+
+  const fetchData = useCallback(async () => {
+    if (!caseId) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const data = await api.cases.getDetail(caseId);
+      setCaseData(data);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message || 'Failed to fetch case data');
+      console.error('Error fetching case data:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [caseId]);
+
+  // Initial fetch
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Auto-refresh for background job updates
+  useEffect(() => {
+    if (!autoRefresh || !caseId) return;
+
+    const interval = setInterval(() => {
+      // Only refresh if case is still in progress
+      if (caseData?.case?.status && 
+          ['matching', 'ai_processed', 'underwriter_review'].includes(caseData.case.status)) {
+        fetchData();
+      }
+    }, refreshInterval);
+
+    return () => clearInterval(interval);
+  }, [autoRefresh, refreshInterval, caseId, caseData?.case?.status, fetchData]);
+
+  const refresh = useCallback(() => {
+    return fetchData();
+  }, [fetchData]);
+
+  return {
+    caseData,
+    loading,
+    error,
+    refresh,
+  };
+}

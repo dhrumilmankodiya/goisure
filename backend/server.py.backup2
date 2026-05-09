@@ -78,20 +78,6 @@ def create_refresh_token(user_id: str) -> str:
     payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
-# ─── Module-level helper functions ───────────────────────────────────────
-
-def safe_float(value, default=0.0):
-    """Safely convert value to float, handling invalid data"""
-    try:
-        if value is None:
-            return default
-        str_val = str(value).strip().replace(",", "").replace("₹", "")
-        if str_val in ["", "-", "N/A", "NA", "None"]:
-            return default
-        return float(str_val)
-    except (ValueError, AttributeError):
-        return default
-
 # Pydantic Models
 class UserCreate(BaseModel):
     email: EmailStr
@@ -694,8 +680,8 @@ async def calculate_premium(data: PremiumInput, request: Request):
     # Apply factor adjustments
     for factor in factors:
         try:
-            burn_adj = safe_float(factor.get("loading_discount_amount_burn_cost"))
-            enroll_adj = safe_float(factor.get("loading_discount_amount_enrollment"))
+            burn_adj = float(factor.get("loading_discount_amount_burn_cost", "0") or 0)
+            enroll_adj = float(factor.get("loading_discount_amount_enrollment", "0") or 0)
             burn_cost_premium += burn_adj
             enrollment_premium += enroll_adj
         except:
@@ -1248,27 +1234,19 @@ def get_hospital(claim: Dict) -> str:
 
 def get_claim_amount(claim: Dict) -> float:
     """Extract claimed/approved amount from any column naming convention."""
-    # Priority order: approved amounts first (most accurate for loss ratio), then claimed
     amt_keys = [
-        # Approved/paid amounts (use these first — they reflect actual payouts)
-        "Amount_Approved", "AMOUNT_APPROVED", "amount_approved", "APPROVED_AMOUNT",
-        "Net_Amount_Paid", "NET_AMOUNT_PAID", "Net_Amount_Paid_Including_GST_After_TDS", "Net_Amount",
-        "Amount_Paid", "Claim_Paid", "Settled_Amount",
-        "Incurred Amount", "Incurred_Amount", "INCURREDAMOUNT", "incurred_amount",
-        "AMOUNT_CLAIMED_AL_REQUESTED", "AMOUNT_CLAIMED",
-        "Net_Amount_paid_Including_GST_After_TDS",
-        "ChequeAmt", "cheque_amt", "CHEQUE_AMT",
-        # Claimed amounts (use these as fallback)
         "Amount_Claimed", "amount_claimed",
-        "Claimed_Amount", "CLAIMED_AMOUNT", "claimed_amount", "CLAIMEDAMOUNT",
+        "Claimed_Amount", "CLAIMED_AMOUNT", "claimed_amount",
         "Claim_Amount", "CLAIM_AMOUNT", "claim_amount",
         "ClaimAmount", "CLAIMAMOUNT",
         "Billed_Amount", "BILLING_AMOUNT", "billed_amount",
         "Gross_Amount", "GROSS_AMOUNT", "gross_amount",
-        "TOTAL_AMOUNT_APPROVED", "total_amount_approved", "Total_Amount_Claimed",
-        "Approved_Amount",
-        # Generic fallbacks
-        "amount", "Amount",
+        "TOTAL_AMOUNT_APPROVED", "total_amount_approved",
+        "Approved_Amount", "APPROVED_AMOUNT", "approved_amount",
+        "Net_Amount_Paid", "Net_Amount_Paid_Including_GST_After_TDS",
+        "Net_Amount", "Amount_Paid", "Claim_Paid", "Settled_Amount",
+        "Discharge_Amount", "Total_Amount_Claimed",
+        "amount", "Amount"
     ]
     for key in amt_keys:
         val = claim.get(key)
@@ -1467,7 +1445,13 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
         claim_emp_id = get_emp_id(claim)
         claim_name     = get_name(claim)
         claim_mem_id   = get_member_id(claim)
-        claim_amount = get_claim_amount(claim)
+        claim_amount = (claim.get("Amount_Claimed") or
+                        claim.get("amount_claimed") or
+                        claim.get("claim_amount") or
+                        claim.get("ClaimAmount") or
+                        claim.get("CLAIM_AMOUNT") or
+                        claim.get("Total_Claimed") or
+                        claim.get("amount") or 0)
 
         # ── 1. Exact employee ID match (try numeric version too)
         if claim_emp_id:
@@ -1538,7 +1522,7 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.post(
-                            "https://ollama.com/v1/chat/completions",
+                            "https://api.ollama.com/v1/chat/completions",
                             headers={
                                 "Authorization": f"Bearer {api_key}",
                                 "Content-Type": "application/json",
@@ -1546,7 +1530,7 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
                                 "X-Title": "Goisure"
                             },
                             json={
-                                "model": "gemma3:27b",
+                                "model": "gemma2-27b-it",
                                 "messages": [
                                     {"role": "system",
                                      "content": "You are an expert insurance name-matching system. Given a claimant name and a list of enrolled names, return ONLY the best matching name from the list, or 'NO_MATCH' if none are the same person. Be strict — only match if you are confident the names refer to the same individual."},
@@ -1646,8 +1630,8 @@ async def get_analytics(case_id: str, request: Request = None):
     unmatched_count = total_claims - matched_count
 
     # Financial summary from structured_data
-    total_claimed = sum(safe_float(r.get("Total_Claimed")) for r in matched_records)
-    total_approved = sum(safe_float(r.get("Total_Approved")) for r in matched_records)
+    total_claimed = sum(float(r.get("Total_Claimed", 0) or 0) for r in matched_records)
+    total_approved = sum(float(r.get("Total_Approved", 0) or 0) for r in matched_records)
     
     # Create analytics object
     analytics = {
@@ -1722,7 +1706,10 @@ async def process_ai(case_id: str, request: Request = None):
     # Calculate basic stats (needed for both AI and fallback paths)
     total_enrolled = len(enrollment_data)
     total_claims = len(claims_data)
-    total_claimed = sum(get_claim_amount(c) for c in claims_data)
+    total_claimed = sum(
+        float(str(c.get("Claimed Amount") or c.get("ClaimAmount") or c.get("Incurred Amount") or c.get("TOTAL_AMOUNT_APPROVED") or c.get("Net_Amount_paid_Including_GST_After_TDS") or 0).replace(",", ""))
+        for c in claims_data
+    )
     
     api_key = os.environ.get("OLLAMA_CLOUD_API_KEY", "")
     # Also try reading from file if env var not set (Ollama Cloud)
@@ -1765,13 +1752,14 @@ Total claimed amount: ₹{total_claimed:,.2f}
 Generate the merged data and AI insights.respond with JSON only."""
 
                 async with session.post(
-                    "https://ollama.com/v1/chat/completions",
+                    "https://api.ollama.com/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
+                        "Ollama-Version": "2024-12-09"
                     },
                     json={
-                        "model": "gemma3:27b",
+                        "model": "gemma2-27b-it",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
@@ -1784,22 +1772,20 @@ Generate the merged data and AI insights.respond with JSON only."""
                     if resp.status == 200:
                         result = await resp.json()
                         content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        logger.info(f"Ollama response received: {len(content)} chars")
                         
                         # Try to parse JSON from response
                         try:
+                            # Find JSON in response
                             json_start = content.find('{')
                             json_end = content.rfind('}') + 1
                             if json_start >= 0 and json_end > json_start:
                                 ai_result = json.loads(content[json_start:json_end])
                                 ai_insights = ai_result.get("insights", [])
                                 structured_data = ai_result.get("structured_data", [])
-                                logger.info(f"AI parsed: {len(ai_insights)} insights, {len(structured_data)} members")
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse AI JSON response: {e}, content preview: {content[:200]}")
+                        except json.JSONDecodeError:
+                            logger.warning("Failed to parse AI JSON response")
                     else:
-                        body = await resp.text()
-                        logger.warning(f"Ollama Cloud Gemma 4 API returned status {resp.status}: {body[:500]}")
+                        logger.warning(f"Ollama Cloud Gemma 4 API returned status {resp.status}")
         except Exception as e:
             logger.warning(f"AI processing failed: {e}")
     
@@ -1935,8 +1921,15 @@ Generate the merged data and AI insights.respond with JSON only."""
         claims_amounts = []
         for c in claims_data:
             try:
-                amt = get_claim_amount(c)
-                claims_amounts.append(amt)
+                amt = (c.get("Claimed Amount") or
+                       c.get("Incurred Amount") or
+                       c.get("TOTAL_AMOUNT_APPROVED") or
+                       c.get("Net_Amount_paid_Including_GST_After_TDS") or
+                       c.get("amount_claimed") or
+                       c.get("Amount_Claimed") or
+                       c.get("total_amount_approved") or
+                       0)
+                claims_amounts.append(float(amt) if amt else 0)
             except:
                 claims_amounts.append(0)
         total_claimed = sum(claims_amounts)
@@ -2027,8 +2020,8 @@ Generate the merged data and AI insights.respond with JSON only."""
                     "diagnosis_primary": str(c.get("Pdig") or c.get("ICD") or c.get("DiseaseCategory") or ""),
                     "diagnosis_secondary": str(c.get("Pdig2") or c.get("ICD2") or ""),
                     "diagnosis_tertiary": str(c.get("Pdig3") or c.get("ICD3") or ""),
-                    "claim_amount": get_claim_amount(c),
-                    "approved_amount": get_claim_amount(c),
+                    "claim_amount": float(c.get("Claimed Amount") or c.get("Incurred Amount") or 0),
+                    "approved_amount": float(c.get("Amount_Claimed") or c.get("Total_Amount_Claimed") or c.get("Net_Amount_paid_Including_GST_After_TDS") or 0),
                     "claim_status": str(c.get("Claim Status") or ""),
                     "claim_type": str(c.get("Claim Type") or ""),
                 }
@@ -2195,8 +2188,8 @@ Generate the merged data and AI insights.respond with JSON only."""
                         "diagnosis_primary": c.get("diagnosis_primary", ""),
                         "diagnosis_secondary": c.get("diagnosis_secondary", ""),
                         "diagnosis_tertiary": c.get("diagnosis_tertiary", ""),
-                        "amount_claimed": get_claim_amount(c),
-                        "amount_approved": safe_float(c.get("approved_amount") or c.get("TOTAL_AMOUNT_APPROVED") or c.get("Incurred_Amount") or c.get("INCURREDAMOUNT") or c.get("Incurred Amount") or c.get("ChequeAmt") or c.get("Net_Amount_Paid") or c.get("Net_Amount_paid_Including_GST_After_TDS")),
+                        "amount_claimed": c.get("claim_amount", 0),
+                        "amount_approved": c.get("approved_amount", 0),
                         "status": c.get("claim_status", ""),
                         "type": c.get("claim_type", "")
                     }
@@ -2241,11 +2234,11 @@ Generate the merged data and AI insights.respond with JSON only."""
     
     # Sum from claims_detail for accuracy
     total_claimed_sd = sum(
-        safe_float(c.get("amount_claimed") or c.get("claim_amount"))
+        float(c.get("amount_claimed", 0) or c.get("claim_amount", 0) or 0)
         for r in matched_records
         for c in r.get("claims_detail", [])
     )
-    total_approved_sd = sum(safe_float(r.get("Total_Approved")) for r in matched_records)
+    total_approved_sd = sum(float(r.get("Total_Approved", 0) or 0) for r in matched_records)
     
     analytics = {
         "overview": {
@@ -2400,7 +2393,7 @@ Return ONLY valid JSON, no other text."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://ollama.com/v1/chat/completions",
+                "https://api.ollama.com/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -2408,7 +2401,7 @@ Return ONLY valid JSON, no other text."""
                     "X-Title": "Goisure"
                 },
                 json={
-                    "model": "gemma3:27b",
+                    "model": "gemma2-27b-it",
                     "messages": [
                         {"role": "system", "content": "You are a data mapping expert for insurance GMC files. Map source columns to standard fields accurately."},
                         {"role": "user", "content": prompt}
@@ -3579,7 +3572,7 @@ async def get_case_members(
     paginated = members[start_idx:end_idx]
     for m in paginated:
         if "risk_score" not in m:
-            claimed = safe_float(m.get("Total_Claimed"))
+            claimed = float(m.get("Total_Claimed", 0) or 0)
             score = 0
             if claimed > 1000000:
                 score = 80
@@ -3619,8 +3612,8 @@ async def get_claim_breakdown(case_id: str, request: Request):
     for member in structured_data:
         name = member.get("Name", "Unknown")
         diagnosis = str(member.get("Diagnosis_1", "") or member.get("Diagnosis", "") or "").strip().lower()
-        claimed = safe_float(member.get("Total_Claimed"))
-        approved = safe_float(member.get("Total_Approved"))
+        claimed = float(member.get("Total_Claimed", 0) or 0)
+        approved = float(member.get("Total_Approved", 0) or 0)
         if not diagnosis and claimed == 0:
             continue
         if not diagnosis:
@@ -3698,7 +3691,7 @@ async def get_claim_trends(case_id: str, request: Request):
     structured_data = case.get("structured_data", [])
     import random
     random.seed(hash(case_id) % 2**32)
-    total_claimed = sum(safe_float(m.get("Total_Claimed")) for m in structured_data)
+    total_claimed = sum(float(m.get("Total_Claimed", 0) or 0) for m in structured_data)
     total_members = len(structured_data)
     quarters = ["Q1 FY24-25", "Q2 FY24-25", "Q3 FY24-25", "Q4 FY24-25", "Q1 FY25-26"]
     base_freq = 6.5
@@ -3713,7 +3706,7 @@ async def get_claim_trends(case_id: str, request: Request):
         claim_frequency_trend.append({"quarter": q, "frequency": round(freq, 1), "members": total_members})
         loss_ratio_trend.append({"quarter": q, "loss_ratio": round(lr, 1), "benchmark": 65})
         total_claimed_trend.append({"quarter": q, "value": round(claimed_q, 0)})
-    freq = (len([m for m in structured_data if safe_float(m.get("Total_Claimed")) > 0]) / total_members * 100) if total_members else 0
+    freq = (len([m for m in structured_data if float(m.get("Total_Claimed", 0) or 0) > 0]) / total_members * 100) if total_members else 0
     claim_frequency_trend[-1]["frequency"] = round(freq, 1)
     return {"success": True, "trends": {"loss_ratio": loss_ratio_trend, "claim_frequency": claim_frequency_trend, "total_claimed": total_claimed_trend}, "current": {"loss_ratio": round(loss_ratio_trend[-1]["loss_ratio"], 1), "claim_frequency": round(claim_frequency_trend[-1]["frequency"], 1)}}
 
@@ -3917,7 +3910,7 @@ Return ONLY valid JSON, no other text."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://ollama.com/v1/chat/completions",
+                "https://api.ollama.com/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -3925,7 +3918,7 @@ Return ONLY valid JSON, no other text."""
                     "X-Title": "Goisure"
                 },
                 json={
-                    "model": "gemma3:27b",
+                    "model": "gemma2-27b-it",
                     "messages": [
                         {"role": "system", "content": "You are a data mapping expert for insurance GMC files. Map source columns to standard fields accurately."},
                         {"role": "user", "content": prompt}
@@ -5096,7 +5089,7 @@ async def get_case_members(
     paginated = members[start_idx:end_idx]
     for m in paginated:
         if "risk_score" not in m:
-            claimed = safe_float(m.get("Total_Claimed"))
+            claimed = float(m.get("Total_Claimed", 0) or 0)
             score = 0
             if claimed > 1000000:
                 score = 80
@@ -5136,8 +5129,8 @@ async def get_claim_breakdown(case_id: str, request: Request):
     for member in structured_data:
         name = member.get("Name", "Unknown")
         diagnosis = str(member.get("Diagnosis_1", "") or member.get("Diagnosis", "") or "").strip().lower()
-        claimed = safe_float(member.get("Total_Claimed"))
-        approved = safe_float(member.get("Total_Approved"))
+        claimed = float(member.get("Total_Claimed", 0) or 0)
+        approved = float(member.get("Total_Approved", 0) or 0)
         if not diagnosis and claimed == 0:
             continue
         if not diagnosis:
@@ -5215,7 +5208,7 @@ async def get_claim_trends(case_id: str, request: Request):
     structured_data = case.get("structured_data", [])
     import random
     random.seed(hash(case_id) % 2**32)
-    total_claimed = sum(safe_float(m.get("Total_Claimed")) for m in structured_data)
+    total_claimed = sum(float(m.get("Total_Claimed", 0) or 0) for m in structured_data)
     total_members = len(structured_data)
     quarters = ["Q1 FY24-25", "Q2 FY24-25", "Q3 FY24-25", "Q4 FY24-25", "Q1 FY25-26"]
     base_freq = 6.5
@@ -5230,7 +5223,7 @@ async def get_claim_trends(case_id: str, request: Request):
         claim_frequency_trend.append({"quarter": q, "frequency": round(freq, 1), "members": total_members})
         loss_ratio_trend.append({"quarter": q, "loss_ratio": round(lr, 1), "benchmark": 65})
         total_claimed_trend.append({"quarter": q, "value": round(claimed_q, 0)})
-    freq = (len([m for m in structured_data if safe_float(m.get("Total_Claimed")) > 0]) / total_members * 100) if total_members else 0
+    freq = (len([m for m in structured_data if float(m.get("Total_Claimed", 0) or 0) > 0]) / total_members * 100) if total_members else 0
     claim_frequency_trend[-1]["frequency"] = round(freq, 1)
     return {"success": True, "trends": {"loss_ratio": loss_ratio_trend, "claim_frequency": claim_frequency_trend, "total_claimed": total_claimed_trend}, "current": {"loss_ratio": round(loss_ratio_trend[-1]["loss_ratio"], 1), "claim_frequency": round(claim_frequency_trend[-1]["frequency"], 1)}}
 

@@ -1,0 +1,60 @@
+
+// TabNavigation Component - Tab switcher with counts
+
+interface TabNavigationProps {
+  activeTab: string;
+  onTabChange: (tab: string) => void;
+  tabCounts?: Record<string, number | null>;
+}
+
+const tabs = [
+  { key: 'summary', label: 'Summary' },
+  { key: 'enrollment', label: 'Enrollment' },
+  { key: 'claims', label: 'Claims' },
+  { key: 'matching', label: 'Matching' },
+  { key: 'insights', label: 'Insights' },
+  { key: 'underwriting', label: 'Underwriting' },
+];
+
+export default function TabNavigation({
+  activeTab,
+  onTabChange,
+  tabCounts,
+}: TabNavigationProps) {
+  return (
+    <nav className="flex space-x-1 border-b border-gray-200 overflow-x-auto" role="tablist">
+      {tabs.map((tab) => {
+        const count = tabCounts?.[tab.key];
+        const isActive = activeTab === tab.key;
+        
+        return (
+          <button
+            key={tab.key}
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onTabChange(tab.key)}
+            className={`
+              relative px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors
+              ${isActive
+                ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+              }
+            `}
+          >
+            <span className="flex items-center">
+              {tab.label}
+              {count != null && (
+                <span className={`
+                  ml-2 px-2 py-0.5 text-xs rounded-full
+                  ${isActive ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}
+                `}>
+                  {count}
+                </span>
+              )}
+            </span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}

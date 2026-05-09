@@ -1,0 +1,145 @@
+
+// useWorkflow Hook - Track and manage case workflow state
+
+interface WorkflowState {
+  currentStep: string;
+  nextStep: string | null;
+  completedSteps: string[];
+  pendingSteps: string[];
+  canResume: boolean;
+  nextAction: any;
+}
+
+export default function useWorkflow(caseData?: any): WorkflowState {
+  const status = caseData?.case?.status || 'draft';
+  
+  // Define workflow steps in order
+  const workflowSteps = [
+    'upload',
+    'matching',
+    'ai_process',
+    'underwriter',
+    'completed',
+  ];
+
+  // Determine completed steps based on status
+  const getCompletedSteps = (): string[] => {
+    switch (status) {
+      case 'completed':
+        return [...workflowSteps];
+      case 'underwriter_review':
+        return ['upload', 'matching', 'ai_process'];
+      case 'ai_processed':
+        return ['upload', 'matching'];
+      case 'matching':
+        return ['upload'];
+      case 'uploaded':
+        return ['upload'];
+      default:
+        return [];
+    }
+  };
+
+  const completedSteps = getCompletedSteps();
+  
+  // Find current step
+  const currentStepIndex = workflowSteps.findIndex(
+    (step) => status === 'completed' ? step === 'completed' :
+    status === 'underwriter_review' ? step === 'underwriter' :
+    status === 'ai_processed' ? step === 'ai_process' :
+    status === 'matching' ? step === 'matching' :
+    ['uploaded', 'draft'].includes(status) ? step === 'upload' :
+    step === 'upload'
+  );
+  
+  const currentStep = workflowSteps[Math.max(0, currentStepIndex)];
+  
+  // Get pending steps
+  const currentIndex = completedSteps.length;
+  const pendingSteps = workflowSteps.slice(currentIndex);
+  
+  // Determine next step
+  const nextStep = pendingSteps[0] || null;
+  
+  // Check if workflow can resume
+  const canResume = pendingSteps.length > 0;
+
+  // Determine next action based on status and data
+  const getNextAction = () => {
+    const hasEnrollment = caseData?.enrollment?.total_count > 0;
+    const hasClaims = caseData?.claims?.total_count > 0;
+    const hasMatches = caseData?.matching?.match_results?.length > 0;
+
+    // Check prerequisites and suggest next action
+    if (status === 'draft' || status === 'uploaded') {
+      if (!hasEnrollment && !hasClaims) {
+        return {
+          action: 'upload',
+          label: 'Upload Files',
+          priority: 'high',
+          description: 'Start by uploading enrollment and claims data',
+        };
+      }
+      return {
+        action: 'run_matching',
+        label: 'Run AI Matching',
+        priority: 'high',
+        description: 'Ready to match claims with enrollment data',
+      };
+    }
+
+    if (status === 'matching' || (hasEnrollment && hasClaims && !hasMatches)) {
+      return {
+        action: 'run_matching',
+        label: 'Run AI Matching',
+        priority: 'high',
+        description: 'Match claims to enrollment records using AI',
+      };
+    }
+
+    if (status === 'ai_processed' || (hasMatches && status !== 'underwriter_review')) {
+      return {
+        action: 'submit_underwriter',
+        label: 'Submit to Underwriter',
+        priority: 'high',
+        description: 'Case ready for underwriter review',
+      };
+    }
+
+    if (status === 'underwriter_review') {
+      return {
+        action: 'review_pending',
+        label: 'Under Review',
+        priority: 'medium',
+        description: 'Awaiting underwriter decision',
+      };
+    }
+
+    if (status === 'completed') {
+      return {
+        action: 'generate_report',
+        label: 'Download Report',
+        priority: 'low',
+        description: 'Case processing complete',
+      };
+    }
+
+    return {
+      action: 'view',
+      label: 'View Details',
+      priority: 'low',
+      description: 'Review case information',
+    };
+  };
+
+  const nextAction = getNextAction();
+
+  return {
+    currentStep,
+    nextStep,
+    completedSteps,
+    pendingSteps,
+    canResume,
+    nextAction,
+  };
+}

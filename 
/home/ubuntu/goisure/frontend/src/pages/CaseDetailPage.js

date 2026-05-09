@@ -1,0 +1,643 @@
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
+import Layout from '../components/Layout';
+import { useAuth } from '../contexts/AuthContext';
+import { casesApi, matchingApi } from '../lib/api';
+import { toast } from 'sonner';
+
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Badge } from '../components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import {
+  ArrowLeft,
+  FileText,
+  Users,
+  DollarSign,
+  Calendar,
+  Clock,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  ArrowRight,
+  Upload,
+  Eye,
+  Edit,
+  Send,
+  ShieldCheck,
+  Activity,
+  TrendingUp,
+  FileBarChart,
+  Target,
+  AlertCircle,
+  Check,
+  Download,
+  SendToUnderwriter,
+  BarChart3,
+  Settings,
+  Save,
+  RefreshCw,
+  ChevronRight,
+  ChevronDown,
+  MoreVertical,
+  Share2,
+  Printer,
+} from 'lucide-react';
+
+const statusConfig = {
+  draft: { label: 'Draft', class: 'bg-zinc-100 text-zinc-700', icon: FileText, color: 'zinc' },
+  uploaded: { label: 'Files Uploaded', class: 'bg-blue-50 text-blue-700', icon: Upload, color: 'blue' },
+  mapping_applied: { label: 'Mapping Applied', class: 'bg-amber-50 text-amber-700', icon: Edit, color: 'amber' },
+  mapping_review: { label: 'Mapping Review', class: 'bg-purple-50 text-purple-700', icon: Eye, color: 'purple' },
+  data_correction: { label: 'Data Correction', class: 'bg-orange-50 text-orange-700', icon: Edit, color: 'orange' },
+  review: { label: 'Review', class: 'bg-indigo-50 text-indigo-700', icon: Eye, color: 'indigo' },
+  submitted: { label: 'Submitted to UW', class: 'bg-cyan-50 text-cyan-700', icon: Send, color: 'cyan' },
+  under_review: { label: 'Under Review', class: 'bg-yellow-50 text-yellow-700', icon: Clock, color: 'yellow' },
+  approved: { label: 'Approved', class: 'bg-emerald-50 text-emerald-700', icon: CheckCircle, color: 'emerald' },
+  rejected: { label: 'Rejected', class: 'bg-red-50 text-red-700', icon: XCircle, color: 'red' },
+  needs_correction: { label: 'Needs Correction', class: 'bg-orange-50 text-orange-700', icon: AlertTriangle, color: 'orange' },
+};
+
+// Stat Card Component
+const StatCard = ({ label, value, sub, icon: Icon, color = 'blue', href }) => {
+  const colorMap = {
+    blue: 'bg-blue-50 text-blue-600 border-blue-100',
+    purple: 'bg-purple-50 text-purple-600 border-purple-100',
+    amber: 'bg-amber-50 text-amber-600 border-amber-100',
+    emerald: 'bg-emerald-50 text-emerald-600 border-emerald-100',
+    red: 'bg-red-50 text-red-600 border-red-100',
+    orange: 'bg-orange-50 text-orange-600 border-orange-100',
+    cyan: 'bg-cyan-50 text-cyan-600 border-cyan-100',
+    gray: 'bg-gray-50 text-gray-600 border-gray-100',
+  };
+  const content = (
+    <div className="p-4 border rounded-xl hover:shadow-md transition-all cursor-pointer group">
+      <div className="flex items-center justify-between mb-3">
+        <div className={`w-10 h-10 rounded-xl border ${colorMap[color] || colorMap.blue} flex items-center justify-center`}>
+          <Icon className="w-4 h-4" />
+        </div>
+        <ChevronRight className="w-4 h-4 text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+      </div>
+      <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">{label}</p>
+      <p className="text-xl font-bold font-['Chivo'] text-gray-900">{value}</p>
+      {sub && <p className="text-xs text-gray-500 mt-1">{sub}</p>}
+    </div>
+  );
+  if (href) {
+    return <Link to={href}>{content}</Link>;
+  }
+  return content;
+};
+
+// Risk Badge Component
+const RiskBadge = ({ level }) => {
+  const configs = {
+    high: { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' },
+    medium: { bg: 'bg-yellow-100', text: 'text-yellow-700', border: 'border-yellow-200' },
+    low: { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-200' },
+    unknown: { bg: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-200' },
+  };
+  const config = configs[level] || configs.unknown;
+  return (
+    <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${config.bg} ${config.text} ${config.border}`}>
+      {level?.toUpperCase() || 'UNKNOWN'}
+    </span>
+  );
+};
+
+// Progress Circle Component
+const ProgressCircle = ({ value, max, label, color = 'blue' }) => {
+  const percentage = Math.min(100, Math.max(0, (value / max) * 100));
+  const radius = 36;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (percentage / 100) * circumference;
+  const colorMap = {
+    blue: '#0055FF',
+    green: '#10B981',
+    amber: '#F59E0B',
+    red: '#EF4444',
+    purple: '#8B5CF6',
+  };
+  return (
+    <div className="flex flex-col items-center">
+      <svg width="90" height="90" viewBox="0 0 90 90">
+        <circle cx="45" cy="45" r={radius} fill="none" stroke="#E5E7EB" strokeWidth="6" />
+        <circle cx="45" cy="45" r={radius} fill="none" stroke={colorMap[color]} strokeWidth="6"
+          strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round"
+          transform="rotate(-90 45 45)" />
+      </svg>
+      <div className="absolute flex flex-col items-center mt-12">
+        <span className="text-lg font-bold font-['Chivo'] text-gray-900">{value}</span>
+        <span className="text-xs text-gray-500">{label}</span>
+      </div>
+    </div>
+  );
+};
+
+// Action Button Component
+const ActionButton = ({ icon: Icon, label, variant = 'primary', onClick, loading, disabled, ...props }) => {
+  const variants = {
+    primary: 'bg-[#0055FF] hover:bg-[#0040CC] text-white',
+    secondary: 'bg-white hover:bg-gray-50 text-gray-700 border border-gray-200',
+    success: 'bg-emerald-600 hover:bg-emerald-700 text-white',
+    warning: 'bg-amber-600 hover:bg-amber-700 text-white',
+  };
+  return (
+    <Button variant="ghost" className={`${variants[variant]} px-4 py-2 font-medium flex items-center gap-2 disabled:opacity-50`}
+      onClick={onClick} disabled={disabled || loading} {...props}>
+      {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Icon className="w-4 h-4" />}
+      {label}
+    </Button>
+  );
+};
+
+export default function CaseDetailPage() {
+  const { caseId } = useParams();
+  const navigate = useNavigate();
+  const { isAgent, isUnderwriter, isAdmin } = useAuth();
+  
+  // State
+  const [caseData, setCaseData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [processing, setProcessing] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [matchingResults, setMatchingResults] = useState(null);
+  const [underwritingMetrics, setUnderwritingMetrics] = useState(null);
+  const [aiInsights, setAiInsights] = useState([]);
+  const [claimBreakdown, setClaimBreakdown] = useState(null);
+  const [claimTrends, setClaimTrends] = useState(null);
+
+  // Fetch case data
+  const fetchCase = useCallback(async () => {
+    try {
+      setLoading(true);
+      const { data } = await casesApi.getById(caseId);
+      setCaseData(data);
+      setAiInsights(data.ai_insights || []);
+      setUnderwritingMetrics(data.underwriting_metrics || data.metrics || {});
+      
+      // Try to load matching results if available
+      if (data.structured_data?.length > 0) {
+        const matchRes = await matchingApi.getResults(caseId).catch(() => null);
+        if (matchRes?.data) setMatchingResults(matchRes.data);
+      }
+    } catch (error) {
+      toast.error('Failed to load case: ' + (error.response?.data?.detail || error.message));
+      navigate('/cases');
+    } finally {
+      setLoading(false);
+    }
+  }, [caseId, navigate]);
+
+  // Fetch analytics
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      const { data } = await matchingApi.getAnalytics(caseId);
+      setUnderwritingMetrics(data.underwriting_metrics || {});
+      setAiInsights(data.ai_insights || []);
+    } catch (error) {
+      console.error('Failed to fetch analytics:', error);
+    }
+  }, [caseId]);
+
+  // Fetch claim breakdown
+  const fetchClaimBreakdown = useCallback(async () => {
+    try {
+      const { data } = await casesApi.getClaimBreakdown?.(caseId) || 
+        await fetch(`${import.meta.env.VITE_API_URL || ''}/api/cases/${caseId}/claim-breakdown`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        }).then(r => r.json());
+      if (data?.success || data?.breakdown) setClaimBreakdown(data.breakdown || data);
+    } catch (error) {
+      console.error('Failed to fetch claim breakdown:', error);
+    }
+  }, [caseId]);
+
+  // Fetch claim trends
+  const fetchClaimTrends = useCallback(async () => {
+    try {
+      const { data } = await casesApi.getClaimTrends?.(caseId) ||
+        await fetch(`${import.meta.env.VITE_API_URL || ''}/api/cases/${caseId}/claim-trends`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        }).then(r => r.json());
+      if (data?.success || data?.trends) setClaimTrends(data);
+    } catch (error) {
+      console.error('Failed to fetch claim trends:', error);
+    }
+  }, [caseId]);
+
+  useEffect(() => {
+    fetchCase();
+  }, [fetchCase]);
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '-';
+    return new Date(dateStr).toLocaleDateString('en-US', {
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    });
+  };
+
+  const formatCurrency = (amount) => {
+    if (!amount && amount !== 0) return '-';
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency', currency: 'INR', maximumFractionDigits: 0
+    }).format(amount);
+  };
+
+  const getNextActions = () => {
+    if (!caseData) return [];
+    const actions = [];
+    switch (caseData.status) {
+      case 'draft':
+        actions.push(
+          { type: 'primary', icon: Upload, label: 'Upload Enrollment File', href: `/cases/${caseId}/upload` },
+          { type: 'secondary', icon: Download, label: 'Download Template', href: '#' }
+        );
+        break;
+      case 'uploaded':
+        actions.push(
+          { type: 'primary', icon: Edit, label: 'Review Mapping', href: `/cases/${caseId}/mapping` },
+          { type: 'secondary', icon: Settings, label: 'Auto-Map Fields', onClick: () => {} }
+        );
+        break;
+      case 'mapping_applied':
+        actions.push(
+          { type: 'primary', icon: CheckCircle, label: 'Confirm Mapping', href: `/cases/${caseId}/review` },
+          { type: 'secondary', icon: Eye, label: 'Preview Data', onClick: () => {} }
+        );
+        break;
+      case 'review':
+        actions.push(
+          { type: 'primary', icon: Send, label: 'Run AI Analysis', onClick: runAIAnalysis, loading: processing },
+          { type: 'secondary', icon: ShieldCheck, label: 'Request Underwriter Review', onClick: () => navigate(`/cases/${caseId}/review`)}
+        );
+        break;
+      case 'needs_correction':
+        actions.push(
+          { type: 'warning', icon: Edit, label: 'Fix Data Issues', href: `/cases/${caseId}/correction` }
+        );
+        break;
+      default:
+        if (isUnderwriter || isAdmin) {
+          actions.push({ type: 'primary', icon: ShieldCheck, label: 'Review Case', href: `/underwriter/cases/${caseId}` });
+        }
+        break;
+    }
+    return actions;
+  };
+
+  const runAIAnalysis = async () => {
+    setProcessing(true);
+    try {
+      await matchingApi.processAI(caseId);
+      await Promise.all([fetchCase(), fetchAnalytics()]);
+      toast.success('AI analysis completed');
+    } catch (error) {
+      toast.error('AI analysis failed: ' + error.message);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleSubmitToUnderwriter = async () => {
+    try {
+      await casesApi.submit(caseId);
+      await fetchCase();
+      toast.success('Case submitted to underwriter');
+    } catch (error) {
+      toast.error('Submission failed: ' + error.message);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Layout>
+        <div className="flex flex-col items-center justify-center h-96 gap-4">
+          <div className="w-12 h-12 border-4 border-[#0055FF] border-t-transparent rounded-full animate-spin" />
+          <p className="text-gray-500">Loading case details...</p>
+        </div>
+      </Layout>
+    );
+  }
+
+  if (!caseData) {
+    return (
+      <Layout>
+        <div className="text-center py-20">
+          <FileBarChart className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <p className="text-gray-500 text-lg">Case not found</p>
+          <Link to="/cases" className="text-[#0055FF] hover:underline mt-2 inline-block">← Back to Cases</Link>
+        </div>
+      </Layout>
+    );
+  }
+
+  const statusInfo = statusConfig[caseData.status] || statusConfig.draft;
+  const StatusIcon = statusInfo.icon;
+  const nextActions = getNextActions();
+
+  const fmt = (n) => {
+    if (!n && n !== 0) return '—';
+    return '₹' + Number(n).toLocaleString('en-IN');
+  };
+  const fmtLac = (n) => {
+    if (!n && n !== 0) return '—';
+    return '₹' + (Number(n) / 100000).toFixed(2) + 'L';
+  };
+
+  // Risk score calculation
+  const riskScore = underwritingMetrics?.risk_score || aiInsights?.find(i => i.type === 'risk')?.score || 0;
+  const riskLevel = riskScore >= 70 ? 'high' : riskScore >= 40 ? 'medium' : riskScore > 0 ? 'low' : 'unknown';
+
+  return (
+    <Layout>
+      <div className="space-y-6 animate-fade-in">
+        {/* Header Section */}
+        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+          <div className="space-y-2">
+            <div className="flex items-center gap-3 flex-wrap">
+              <Link to="/cases" className="inline-flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900">
+                <ArrowLeft className="w-4 h-4" />
+                Back to Cases
+              </Link>
+              <span className="text-gray-300">/</span>
+              <h1 className="text-2xl lg:text-3xl font-bold font-['Chivo'] tracking-tight text-gray-900">{caseData.case_id}</h1>
+            </div>
+            <p className="text-gray-600 text-lg">{caseData.client_name}</p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <Badge className={statusInfo.class}>
+                <StatusIcon className="w-3 h-3 mr-1.5" />
+                {statusInfo.label}
+              </Badge>
+              {caseData.policy_type && (
+                <Badge variant="outline" className="bg-white">{caseData.policy_type}</Badge>
+              )}
+              {caseData.business_type && (
+                <Badge variant="secondary">{caseData.business_type}</Badge>
+              )}
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2 flex-wrap">
+            {nextActions.map((action, i) => {
+              const Comp = action.href ? Link : 'button';
+              const baseProps = action.type === 'primary' ? {
+                className: 'flex items-center gap-2',
+              } : {};
+              return (
+                <ActionButton
+                  key={i}
+                  icon={action.icon}
+                  label={action.label}
+                  variant={action.type}
+                  loading={action.loading}
+                  onClick={action.onClick}
+                  {...(action.href ? { as: Link, href: action.href } : {})}
+                />
+              );
+            })}
+            {(isUnderwriter || isAdmin) && caseData.status !== 'approved' && caseData.status !== 'rejected' && (
+              <Button variant="outline" size="sm" onClick={handleSubmitToUnderwriter}
+                className="flex items-center gap-2 border-gray-200">
+                <SendToUnderwriter className="w-4 h-4" />
+                Submit to UW
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" className="text-gray-400 hover:text-gray-600">
+              <MoreVertical className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          <StatCard label="Members" value={caseData.member_count || 0} sub="Enrolled" icon={Users} color="blue" />
+          <StatCard label="Sum Insured" value={fmtLac(caseData.sum_insured)} sub="Total Coverage" icon={Target} color="purple" />
+          <StatCard label="Claims" value={caseData.claims_count || 0} sub={`${underwritingMetrics?.claims_frequency || 0}% frequency`} icon={Activity} color="amber" />
+          <StatCard label="Claimed" value={fmtLac(caseData.total_claimed || underwritingMetrics?.total_claimed)} sub="Total Value" icon={TrendingUp} color="red" />
+          <StatCard
+            label="Loss Ratio"
+            value={`${underwritingMetrics?.loss_ratio || 0}%`}
+            sub={underwritingMetrics?.loss_ratio >= 100 ? 'Above threshold' : underwritingMetrics?.loss_ratio >= 60 ? 'Watch level' : 'Healthy'}
+            icon={BarChart3}
+            color={underwritingMetrics?.loss_ratio >= 100 ? 'red' : underwritingMetrics?.loss_ratio >= 60 ? 'amber' : 'emerald'}
+          />
+        </div>
+
+        {/* Main Content */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          <TabsList className="flex flex-wrap gap-1 p-1 bg-gray-50 rounded-xl border border-gray-200">
+            <TabsTrigger value="overview" className="data-[state=active]:bg-white data-[state=active]:text-[#0055FF] data-[state=active]:shadow-sm rounded-lg px-4 py-2">Overview</TabsTrigger>
+            <TabsTrigger value="analytics" className="data-[state=active]:bg-white data-[state=active]:text-[#0055FF] data-[state=active]:shadow-sm rounded-lg px-4 py-2">AI Analytics</TabsTrigger>
+            <TabsTrigger value="insights" className="data-[state=active]:bg-white data-[state=active]:text-[#0055FF] data-[state=active]:shadow-sm rounded-lg px-4 py-2">Insights</TabsTrigger>
+            {(matchingResults?.matched_records || caseData?.structured_data?.length > 0) && (
+              <TabsTrigger value="data" className="data-[state=active]:bg-white data-[state=active]:text-[#0055FF] data-[state=active]:shadow-sm rounded-lg px-4 py-2">Data Records</TabsTrigger>
+            )}
+            {caseData?.filename && (
+              <TabsTrigger value="files" className="data-[state=active]:bg-white data-[state=active]:text-[#0055FF] data-[state=active]:shadow-sm rounded-lg px-4 py-2">Files</TabsTrigger>
+            )}
+            {caseData?.underwriter_notes && (
+              <TabsTrigger value="feedback" className="data-[state=active]:bg-white data-[state=active]:text-[#0055FF] data-[state=active]:shadow-sm rounded-lg px-4 py-2">Feedback</TabsTrigger>
+            )}
+          </TabsList>
+
+          {/* Overview Tab */}
+          <TabsContent value="overview" className="space-y-4">
+            {/* Quick Actions */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <Card className="border border-gray-200 hover:shadow-md transition-all">
+                <CardContent className="p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white">
+                      <FileBarChart className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900">Run AI Analysis</p>
+                      <p className="text-xs text-gray-500">Process matching & insights</p>
+                    </div>
+                  </div>
+                  <Button className="w-full bg-[#0055FF] hover:bg-[#0040CC]" onClick={runAIAnalysis} disabled={processing}>
+                    {processing ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : <Activity className="w-4 h-4 mr-2" />}
+                    {processing ? 'Processing...' : 'Analyze Now'}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card className="border border-gray-200 hover:shadow-md transition-all">
+                <CardContent className="p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-green-500 to-green-600 flex items-center justify-center text-white">
+                      <ShieldCheck className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900">Underwriter Review</p>
+                      <p className="text-xs text-gray-500">Submit or check status</p>
+                    </div>
+                  </div>
+                  <Button variant="outline" className="w-full" onClick={() => isUnderwriter || isAdmin ? navigate(`/underwriter/cases/${caseId}`) : handleSubmitToUnderwriter()}>
+                    <ArrowRight className="w-4 h-4 mr-2" />
+                    {isUnderwriter || isAdmin ? 'Open Review' : 'Submit for Review'}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card className="border border-gray-200 hover:shadow-md transition-all">
+                <CardContent className="p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center text-white">
+                      <Settings className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900">Premium Calculator</p>
+                      <p className="text-xs text-gray-500">Estimate pricing options</p>
+                    </div>
+                  </div>
+                  <Button variant="outline" className="w-full" onClick={() => navigate('/calculator')}>
+                    <DollarSign className="w-4 h-4 mr-2" />
+                    Calculate Premium
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Case Information Cards */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <Card className="border border-gray-200">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-gray-400" />
+                    Timeline
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Created</span>
+                    <span className="font-medium">{formatDate(caseData.created_at)}</span>
+                  </div>
+                  {caseData.updated_at && caseData.updated_at !== caseData.created_at && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Last Updated</span>
+                      <span className="font-medium">{formatDate(caseData.updated_at)}</span>
+                    </div>
+                  )}
+                  {caseData.submitted_at && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Submitted</span>
+                      <span className="font-medium">{formatDate(caseData.submitted_at)}</span>
+                    </div>
+                  )}
+                  {caseData.underwriter_notes && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Last Review</span>
+                      <span className="font-medium">{formatDate(caseData.reviewed_at)}</span>
+                    </div>
+                  )}
+                  {caseData.approved_at && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Approved</span>
+                      <span className="font-medium text-emerald-600">{formatDate(caseData.approved_at)}</span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="border border-gray-200">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <Users className="w-4 h-4 text-gray-400" />
+                    Key Details
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Policy Type</span>
+                    <span className="font-medium">{caseData.policy_type || 'GMC'}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Business Type</span>
+                    <span className="font-medium capitalize">{caseData.business_type || 'N/A'}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Agent</span>
+                    <span className="font-medium">{caseData.agent_name || 'N/A'}</span>
+                  </div>
+                  {caseData.underwriter_name && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Underwriter</span>
+                      <span className="font-medium">{caseData.underwriter_name}</span>
+                    </div>
+                  )}
+                  {caseData.premium && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Premium</span>
+                      <span className="font-medium text-emerald-600">{formatCurrency(caseData.premium)}</span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="border border-gray-200">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-gray-400" />
+                    Risk Assessment
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-col items-center justify-center py-2">
+                    <div className="relative">
+                      <ProgressCircle value={riskScore} max={100} label="Risk Score" color={riskLevel === 'high' ? 'red' : riskLevel === 'medium' ? 'amber' : riskLevel === 'low' ? 'emerald' : 'blue'} />
+                    </div>
+                    <div className="mt-4">
+                      <RiskBadge level={riskLevel} />
+                    </div>
+                  </div>
+                  {underwritingMetrics?.confidence && (
+                    <div className="text-center">
+                      <p className="text-xs text-gray-500 mb-1">AI Confidence</p>
+                      <p className="text-lg font-bold text-gray-900">{underwritingMetrics.confidence}%</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Notes */}
+            {caseData.notes && (
+              <Card className="border border-gray-200">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base font-semibold">Notes</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-gray-700">{caseData.notes}</p>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Risk Flags */}
+            {caseData.risk_flags && caseData.risk_flags.length > 0 && (
+              <Card className="border border-orange-200 bg-orange-50/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2 text-orange-700">
+                    <AlertTriangle className="w-4 h-4" />
+                    Risk Flags
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-2">
+                    {caseData.risk_flags.map((flag, idx) => (
+                      <Badge key={idx} variant="outline" className="border-orange-200 text-orange-700 bg-white">
+                        <AlertTriangle className="w-3 h-3 mr-1" />
+                        {flag}
+                      </Badge>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* AI Analytics Tab */}
+          <TabsContent value="analytics" className="space-y-4">
+            <div className="grid grid-cols-1 lg:

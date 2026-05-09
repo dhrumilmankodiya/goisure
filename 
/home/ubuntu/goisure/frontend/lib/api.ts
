@@ -1,0 +1,211 @@
+
+// API Client Wrapper - Type-safe API calls for case management
+
+interface CaseData {
+  case_id: string;
+  client_name: string;
+  policy_type: string;
+  // ... other fields
+}
+
+interface ApiOptions {
+  timeout?: number;
+  retries?: number;
+}
+
+class ApiClient {
+  private baseUrl: string;
+  private defaultOptions: ApiOptions;
+
+  constructor(baseUrl: string = '/api', options: ApiOptions = {}) {
+    this.baseUrl = baseUrl;
+    this.defaultOptions = {
+      timeout: 30000,
+      retries: 3,
+      ...options,
+    };
+  }
+
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const url = `${this.baseUrl}${endpoint}`;
+    const config: RequestInit = {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      ...options,
+    };
+
+    // Add CSRF token if available (for non-GET requests)
+    if (options.method && options.method !== 'GET') {
+      const csrfToken = this.getCsrfToken();
+      if (csrfToken) {
+        config.headers = {
+          ...config.headers,
+          'X-CSRFToken': csrfToken,
+        };
+      }
+    }
+
+    let lastError: any;
+    for (let attempt = 0; attempt < this.defaultOptions.retries; attempt++) {
+      try {
+        const response = await fetch(url, config);
+
+        if (!response.ok) {
+          const error = await this.handleErrorResponse(response);
+          throw error;
+        }
+
+        // Handle no-content responses
+        if (response.status === 204) {
+          return {} as T;
+        }
+
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        lastError = error;
+        if (attempt < this.defaultOptions.retries - 1) {
+          await this.delay(Math.pow(2, attempt) * 1000);
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  private getCsrfToken(): string | null {
+    if (typeof document === 'undefined') return null;
+    return (
+      document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ||
+      (document.cookie.match(/csrftoken=([^;]+)/)?.[1] || null)
+    );
+  }
+
+  private async handleErrorResponse(response: Response): Promise<Error> {
+    const contentType = response.headers.get('content-type');
+    let message = `HTTP ${response.status}: ${response.statusText}`;
+
+    try {
+      if (contentType?.includes('application/json')) {
+        const errorData = await response.json();
+        message = errorData.detail || errorData.message || message;
+      } else {
+        const text = await response.text();
+        if (text) message = text;
+      }
+    } catch {
+      // Use default message
+    }
+
+    const error = new Error(message);
+    (error as any).status = response.status;
+    return error;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Cases API
+  cases = {
+    getDetail: (caseId: string) =>
+      this.request<any>(`/cases/${caseId}/detail`),
+
+    getResume: (caseId: string) =>
+      this.request<{ next_step: string; reason: string }>(
+        `/cases/${caseId}/resume`
+      ),
+
+    saveDraft: (caseId: string, data: any) =>
+      this.request<{ success: boolean; saved_at: string }>(
+        `/cases/${caseId}/save-draft`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }
+      ),
+
+    autoSave: (caseId: string, fieldData: any) =>
+      this.request<{ success: boolean; timestamp: string }>(
+        `/cases/${caseId}/auto-save`,
+        {
+          method: 'POST',
+          body: JSON.stringify(fieldData),
+        }
+      ),
+
+    runMatching: (caseId: string) =>
+      this.request<any>(`/cases/${caseId}/match-ai`, {
+        method: 'POST',
+      }),
+
+    processAI: (caseId: string) =>
+      this.request<any>(`/cases/${caseId}/process-ai`, {
+        method: 'POST',
+      }),
+
+    submitUnderwriter: (caseId: string, notes?: string) =>
+      this.request<any>(`/cases/${caseId}/submit-to-underwriter`, {
+        method: 'POST',
+        body: JSON.stringify({ notes }),
+      }),
+
+    export: (caseId: string, format: 'pdf' | 'xlsx' | 'csv') =>
+      this.request<{ success: boolean; download_url: string }>(
+        `/cases/${caseId}/export?format=${format}`
+      ),
+
+    getMatchResults: (caseId: string) =>
+      this.request<any>(`/cases/${caseId}/match-results`),
+
+    getAnalytics: (caseId: string) =>
+      this.request<any>(`/cases/${caseId}/analytics`),
+
+    uploadFile: (caseId: string, file: File, type?: string) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (type) formData.append('type', type);
+
+      return this.request<any>(`/cases/${caseId}/upload`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          // Don't set Content-Type for FormData
+        },
+      });
+    },
+
+    uploadClaims: (caseId: string, file: File) => {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      return this.request<any>(`/cases/${caseId}/upload-claims`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          // Don't set Content-Type for FormData
+        },
+      });
+    },
+
+    update: (caseId: string, data: any) =>
+      this.request<any>(`/cases/${caseId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+
+    delete: (caseId: string) =>
+      this.request<any>(`/cases/${caseId}`, {
+        method: 'DELETE',
+      }),
+  };
+}
+
+// Export singleton instance
+const api = new ApiClient();
+export default api;

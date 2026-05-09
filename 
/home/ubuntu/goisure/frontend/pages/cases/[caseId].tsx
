@@ -1,0 +1,268 @@
+
+// Case Detail Page - Main Redesigned View
+// Similar to AI Analyse Hub with comprehensive data visualization
+
+import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/router';
+import { useSession } from 'next-auth/react';
+import dynamic from 'next/dynamic';
+
+// Components
+import CaseHeader from '../../components/cases/CaseHeader';
+import CaseProgress from '../../components/cases/CaseProgress';
+import CaseSummaryCard from '../../components/cases/CaseSummaryCard';
+import TabNavigation from '../../components/cases/TabNavigation';
+import ActionBar from '../../components/cases/ActionBar';
+
+// Tab Content Components (lazy loaded for performance)
+const SummaryTab = dynamic(() => import('../../components/cases/tabs/SummaryTab'), { ssr: false });
+const EnrollmentTab = dynamic(() => import('../../components/cases/tabs/EnrollmentTab'), { ssr: false });
+const ClaimsTab = dynamic(() => import('../../components/cases/tabs/ClaimsTab'), { ssr: false });
+const MatchingTab = dynamic(() => import('../../components/cases/tabs/MatchingTab'), { ssr: false });
+const InsightsTab = dynamic(() => import('../../components/cases/tabs/InsightsTab'), { ssr: false });
+const UnderwritingTab = dynamic(() => import('../../components/cases/tabs/UnderwritingTab'), { ssr: false });
+
+// Hooks
+import useCaseData from '../../hooks/useCaseData';
+import useWorkflow from '../../hooks/useWorkflow';
+import useAutoSave from '../../hooks/useAutoSave';
+
+export default function CaseDetailPage() {
+  const router = useRouter();
+  const { data: session, status } = useSession();
+  const { caseId } = router.query;
+  
+  // Active tab state
+  const [activeTab, setActiveTab] = useState('summary');
+  
+  // Fetch case data with auto-refresh
+  const {
+    caseData,
+    loading,
+    error,
+    refresh,
+  } = useCaseData(caseId, { autoRefresh: true, refreshInterval: 30000 });
+  
+  // Workflow management
+  const {
+    currentStep,
+    nextStep,
+    completedSteps,
+    pendingSteps,
+    canResume,
+    nextAction,
+  } = useWorkflow(caseData);
+  
+  // Auto-save functionality
+  const {
+    saveDraft,
+    saving,
+    lastSaved,
+    hasUnsavedChanges,
+  } = useAutoSave(caseId, caseData);
+  
+  // Handle tab change
+  const handleTabChange = useCallback((tab) => {
+    setActiveTab(tab);
+    // Track tab views for analytics
+    if (typeof window !== 'undefined' && window.gtag) {
+      window.gtag('event', 'tab_view', {
+        case_id: caseId,
+        tab_name: tab,
+      });
+    }
+  }, [caseId]);
+  
+  // Handle action from action bar
+  const handleAction = useCallback(async (action) => {
+    switch (action) {
+      case 'run_matching':
+        // Trigger matching API
+        await fetch(`/api/cases/${caseId}/match-ai`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        refresh();
+        break;
+      case 'process_ai':
+        // Trigger AI processing
+        await fetch(`/api/cases/${caseId}/process-ai`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        refresh();
+        break;
+      case 'submit_underwriter':
+        // Submit to underwriter
+        await fetch(`/api/cases/${caseId}/submit-to-underwriter`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        refresh();
+        break;
+      case 'save_draft':
+        await saveDraft({ step: caseData?.status || 'draft' });
+        break;
+      case 'export':
+        window.open(`/api/cases/${caseId}/export?format=pdf`, '_blank');
+        break;
+      default:
+        console.log('Unknown action:', action);
+    }
+  }, [caseId, refresh, saveDraft, caseData?.status]);
+  
+  // Auto-redirect if no caseId
+  useEffect(() => {
+    if (!caseId && status === 'authenticated') {
+      router.push('/cases');
+    }
+  }, [caseId, status, router]);
+  
+  // Loading state
+  if (status === 'loading' || loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+  
+  // Error state
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-lg p-6 max-w-md">
+          <h2 className="text-xl font-semibold text-red-600 mb-2">Error Loading Case</h2>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <button
+            onClick={() => router.push('/cases')}
+            className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition"
+          >
+            Back to Cases List
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
+  // No data
+  if (!caseData) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="text-center">
+          <h2 className="text-xl font-semibold text-gray-600 mb-2">Case Not Found</h2>
+          <p className="text-gray-500 mb-4">The requested case does not exist or you do not have access.</p>
+          <button
+            onClick={() => router.push('/cases')}
+            className="bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition"
+          >
+            Back to Cases List
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
+  // Render tab content
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'summary':
+        return <SummaryTab caseData={caseData} loading={loading} />;
+      case 'enrollment':
+        return <EnrollmentTab caseData={caseData} loading={loading} />;
+      case 'claims':
+        return <ClaimsTab caseData={caseData} loading={loading} />;
+      case 'matching':
+        return <MatchingTab caseData={caseData} loading={loading} />;
+      case 'insights':
+        return <InsightsTab caseData={caseData} loading={loading} />;
+      case 'underwriting':
+        return <UnderwritingTab caseData={caseData} loading={loading} />;
+      default:
+        return <SummaryTab caseData={caseData} loading={loading} />;
+    }
+  };
+  
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <CaseHeader
+        caseId={caseId}
+        clientName={caseData?.case?.client_name}
+        policyType={caseData?.case?.policy_type}
+        status={caseData?.case?.status}
+        onSave={() => handleAction('save_draft')}
+        onRefresh={refresh}
+        saving={saving}
+        lastSaved={lastSaved}
+      />
+      
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Progress Tracker */}
+        <CaseProgress
+          currentStep={currentStep}
+          stepsCompleted={completedSteps}
+          steps={[
+            { key: 'upload', label: 'Upload' },
+            { key: 'matching', label: 'Matching' },
+            { key: 'ai_process', label: 'AI Process' },
+            { key: 'underwriter', label: 'Underwriter' },
+            { key: 'completed', label: 'Completed' },
+          ]}
+          onStepClick={(step) => {
+            if (pendingSteps.includes(step.key)) {
+              handleAction(step.key === 'matching' ? 'run_matching' : 
+                          step.key === 'ai_process' ? 'process_ai' : null);
+            }
+          }}
+        />
+        
+        <div className="mt-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
+          {/* Sidebar - Quick Actions & Summary */}
+          <div className="lg:col-span-1">
+            <CaseSummaryCard
+              caseData={caseData}
+              metrics={caseData?.metrics}
+              nextAction={nextAction}
+              onActionClick={handleAction}
+            />
+          </div>
+          
+          {/* Main Content Area */}
+          <div className="lg:col-span-3">
+            {/* Tab Navigation */}
+            <TabNavigation
+              activeTab={activeTab}
+              onTabChange={handleTabChange}
+              tabCounts={{
+                summary: null,
+                enrollment: caseData?.enrollment?.total_count || 0,
+                claims: caseData?.claims?.total_count || 0,
+                matching: caseData?.matching?.total_matches || 0,
+                insights: caseData?.insights?.ai_insights?.length || 0,
+                underwriting: null,
+              }}
+            />
+            
+            {/* Tab Content */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+              {renderTabContent()}
+            </div>
+          </div>
+        </div>
+      </main>
+      
+      {/* Action Bar - Sticky Bottom */}
+      <ActionBar
+        caseStatus={caseData?.case?.status}
+        canSave={true}
+        canMatch={caseData?.claims?.total_count > 0 && !caseData?.matching?.match_results?.length}
+        canProcess={!!caseData?.matching?.match_results?.length}
+        canSubmit={caseData?.case?.status === 'ai_processed'}
+        onAction={handleAction}
+        hasUnsavedChanges={hasUnsavedChanges}
+      />
+    </div>
+  );
+}

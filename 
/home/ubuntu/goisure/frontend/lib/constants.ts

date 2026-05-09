@@ -1,0 +1,136 @@
+
+// Constants and types for case management
+
+export const CASE_STATUS = {
+  DRAFT: 'draft',
+  UPLOADED: 'uploaded',
+  MATCHING: 'matching',
+  AI_PROCESSED: 'ai_processed',
+  UNDERWRITER_REVIEW: 'underwriter_review',
+  COMPLETED: 'completed',
+  REJECTED: 'rejected',
+} as const;
+
+export type CaseStatus = typeof CASE_STATUS[keyof typeof CASE_STATUS];
+
+export const WORKFLOW_STEPS = {
+  UPLOAD: 'upload',
+  MATCHING: 'matching',
+  AI_PROCESS: 'ai_process',
+  UNDERWRITER: 'underwriter',
+  COMPLETED: 'completed',
+} as const;
+
+export type WorkflowStep = typeof WORKFLOW_STEPS[keyof typeof WORKFLOW_STEPS];
+
+export const CLAIM_STATUS = {
+  PENDING: 'Pending',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+  PAID: 'Paid',
+} as const;
+
+export type ClaimStatus = typeof CLAIM_STATUS[keyof typeof CLAIM_STATUS];
+
+export const MATCH_METHOD = {
+  EMPLOYEE_ID: 'EMPLOYEE_ID',
+  MEMBER_ID: 'MEMBER_ID',
+  EXACT_NAME: 'EXACT_NAME',
+  FUZZY: 'FUZZY',
+  LLM: 'LLM',
+  NO_MATCH: 'NO_MATCH',
+} as const;
+
+export type MatchMethod = typeof MATCH_METHOD[keyof typeof MATCH_METHOD];
+
+export const RISK_LEVEL = {
+  HIGH: 'high',
+  MEDIUM: 'medium',
+  LOW: 'low',
+} as const;
+
+export type RiskLevel = typeof RISK_LEVEL[keyof typeof RISK_LEVEL];
+
+export const PREMIUM_TIER = {
+  ESSENTIAL: 'Essential',
+  STANDARD: 'Standard',
+  ENHANCED: 'Enhanced',
+  PREMIUM: 'Premium',
+} as const;
+
+export type PremiumTier = typeof PREMIUM_TIER[keyof typeof PREMIUM_TIER];
+
+// API Routes
+export const API_ROUTES = {
+  CASES: {
+    DETAIL: (caseId: string) => `/api/cases/${caseId}/detail`,
+    RESUME: (caseId: string) => `/api/cases/${caseId}/resume`,
+    SAVE_DRAFT: (caseId: string) => `/api/cases/${caseId}/save-draft`,
+    AUTO_SAVE: (caseId: string) => `/api/cases/${caseId}/auto-save`,
+    MATCH_AI: (caseId: string) => `/api/cases/${caseId}/match-ai`,
+    PROCESS_AI: (caseId: string) => `/api/cases/${caseId}/process-ai`,
+    SUBMIT_UNDERWRITER: (caseId: string) => `/api/cases/${caseId}/submit-to-underwriter`,
+    EXPORT: (caseId: string) => `/api/cases/${caseId}/export`,
+    MATCH_RESULTS: (caseId: string) => `/api/cases/${caseId}/match-results`,
+    ANALYTICS: (caseId: string) => `/api/cases/${caseId}/analytics`,
+    UPLOAD: (caseId: string) => `/api/cases/${caseId}/upload`,
+    UPLOAD_CLAIMS: (caseId: string) => `/api/cases/${caseId}/upload-claims`,
+  },
+} as const;
+
+// Column names for data tables
+export const ENROLLMENT_COLUMNS = [
+  { key: 'Employee_ID', label: 'Employee ID', sortable: true },
+  { key: 'Name', label: 'Name', sortable: true },
+  { key: 'Age', label: 'Age', sortable: true },
+  { key: 'Gender', label: 'Gender', sortable: true },
+  { key: 'Department', label: 'Department', sortable: true },
+  { key: 'Sum_Insured', label: 'Sum Insured', sortable: true },
+  { key: 'Relationship', label: 'Relationship', sortable: true },
+  { key: 'Pre_Existing_Conditions', label: 'Pre-existing Conditions' },
+  { key: 'Chronic_Condition', label: 'Chronic', sortable: true },
+] as const;
+
+export const CLAIMS_COLUMNS = [
+  { key: 'ClaimID', label: 'Claim ID', sortable: true },
+  { key: 'EmployeeCode', label: 'Employee', sortable: true },
+  { key: 'ClaimAmount', label: 'Amount', sortable: true },
+  { key: 'ClaimDate', label: 'Date', sortable: true },
+  { key: 'ClaimStatus', label: 'Status', sortable: true },
+  { key: 'Diagnosis', label: 'Diagnosis' },
+  { key: 'Hospital', label: 'Hospital' },
+  { key: 'matched_enrollment_id', label: 'Matched', sortable: true },
+] as const;
+
+export const MATCH_RESULTS_COLUMNS = [
+  { key: 'claim_index', label: 'Claim #' },
+  { key: 'claim_data.ClaimAmount', label: 'Amount', sortable: true },
+  { key: 'claim_data.ClaimStatus', label: 'Status', sortable: true },
+  { key: 'matched_enrollment_id', label: 'Matched ID' },
+  { key: 'matched_name', label: 'Matched Name' },
+  { key: 'match_method', label: 'Method', sortable: true },
+  { key: 'confidence', label: 'Confidence %', sortable: true },
+  { key: 'needs_review', label: 'Review Needed' },
+] as const;
+
+// LocalStorage keys
+export const STORAGE_KEYS = {
+  CASE_DRAFT: (caseId: string) => `case:draft:${caseId}`,
+  TABLE_STATE: (caseId: string, tableId: string) => `table:${caseId}:${tableId}`,
+  USER_PREFERENCES: 'user:preferences',
+} as const;
+
+// Debounce timings (ms)
+export const DEBOUNCE = {
+  SHORT: 300,
+  MEDIUM: 500,
+  LONG: 1000,
+  AUTO_SAVE: 30000,
+} as const;
+
+// Refresh intervals (ms)
+export const REFRESH_INTERVALS = {
+  CASE_DATA: 30000,
+  BACKGROUND_JOB: 5000,
+  SLOW: 60000,
+} as const;

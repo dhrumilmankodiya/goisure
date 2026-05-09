@@ -1,0 +1,128 @@
+
+// InsightsTab - AI-powered risk and opportunity insights
+import { useState, useMemo } from 'react';
+import { ShieldExclamationIcon, LightBulbIcon, TrendingUpIcon, AlertTriangleIcon } from 'lucide-react';
+
+const SEVERITY_CONFIG = {
+  high: { color: 'text-red-600', bgColor: 'bg-red-50', borderColor: 'border-red-200' },
+  medium: { color: 'text-yellow-600', bgColor: 'bg-yellow-50', borderColor: 'border-yellow-200' },
+  low: { color: 'text-blue-600', bgColor: 'bg-blue-50', borderColor: 'border-blue-200' },
+};
+
+export default function InsightsTab({ caseData, loading = false }) {
+  const [filter, setFilter] = useState('all');
+
+  const insights = useMemo(() => {
+    if (!caseData) return [];
+    const insights = [];
+    const metrics = caseData.metrics || {};
+    const structuredData = caseData.structured_data || [];
+    const claims = caseData.claims?.data || [];
+    const lossRatio = metrics.loss_ratio || 0;
+
+    if (lossRatio > 70) {
+      insights.push({ type: 'risk', title: 'High Loss Ratio Alert', severity: 'high', icon: AlertTriangleIcon, description: `Loss ratio of ${lossRatio}% significantly exceeds industry benchmark of 60%.`, metrics: [{ label: 'Current', value: lossRatio + '%' }, { label: 'Benchmark', value: '60%' }] });
+    } else if (lossRatio > 50) {
+      insights.push({ type: 'risk', title: 'Elevated Loss Ratio', severity: 'medium', icon: ShieldExclamationIcon, description: `Loss ratio of ${lossRatio}% is above optimal range.`, metrics: [{ label: 'Loss Ratio', value: lossRatio + '%' }] });
+    } else if (lossRatio < 30) {
+      insights.push({ type: 'opportunity', title: 'Strong Portfolio Performance', severity: 'low', icon: LightBulbIcon, description: `Low loss ratio of ${lossRatio}% indicates excellent risk selection.`, metrics: [{ label: 'Loss Ratio', value: lossRatio + '%' }] });
+    }
+
+    const highCostClaims = structuredData.filter(m => m.Total_Claimed > 100000);
+    if (highCostClaims.length > 0) {
+      insights.push({ type: 'risk', title: 'High-Cost Claims Detected', severity: highCostClaims.length > 5 ? 'high' : 'medium', icon: AlertTriangleIcon, description: highCostClaims.length + ' members with claims exceeding ₹100,000.', metrics: [{ label: 'Affected Members', value: highCostClaims.length }, { label: 'Total Exposure', value: '₹' + highCostClaims.reduce((s, m) => s + m.Total_Claimed, 0).toLocaleString() }] });
+    }
+
+    const highFreqMembers = structuredData.filter(m => m.Claim_Count > 3);
+    if (highFreqMembers.length > 0) {
+      insights.push({ type: 'risk', title: 'High Claim Frequency Pattern', severity: 'medium', icon: AlertTriangleIcon, description: highFreqMembers.length + ' members with >3 claims suggest chronic conditions.', metrics: [{ label: 'Affected Members', value: highFreqMembers.length }] });
+    }
+
+    const chronicCount = structuredData.filter(m => m.Chronic_Condition).length;
+    if (chronicCount > 0) {
+      insights.push({ type: 'pattern', title: 'Chronic Condition Pattern', severity: 'medium', icon: ShieldExclamationIcon, description: chronicCount + ' members with pre-existing chronic conditions.', metrics: [{ label: 'Affected Members', value: chronicCount }] });
+    }
+
+    const changePercent = metrics.change_percent || 0;
+    if (changePercent > 10) {
+      insights.push({ type: 'recommendation', title: 'Premium Increase Recommended', severity: 'low', icon: TrendingUpIcon, description: 'Based on ' + changePercent + '% positive premium impact, recommend increasing premium.', metrics: [{ label: 'Recommended Change', value: '+' + changePercent + '%' }] });
+    } else if (changePercent < -10) {
+      insights.push({ type: 'opportunity', title: 'Premium Reduction Opportunity', severity: 'low', icon: LightBulbIcon, description: 'Negative premium impact of ' + changePercent + '% suggests potential for competitive pricing.', metrics: [{ label: 'Potential Reduction', value: changePercent + '%' }] });
+    }
+
+    const claimRate = (metrics.total_claims || 0) / (metrics.total_enrolled || 1);
+    if (claimRate < 0.1) {
+      insights.push({ type: 'opportunity', title: 'Low Claim Rate - Growth Opportunity', severity: 'low', icon: LightBulbIcon, description: 'Only ' + claimRate.toFixed(2) + ' claims per member suggests underutilization.', metrics: [{ label: 'Claims per Member', value: claimRate.toFixed(2) }] });
+    }
+
+    const diagnosisCounts = {};
+    claims.forEach(c => {
+      const diag = c.Diagnosis || c.diagnosis;
+      if (diag) diagnosisCounts[diag] = (diagnosisCounts[diag] || 0) + 1;
+    });
+    const topDiagnoses = Object.entries(diagnosisCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    if (topDiagnoses.length > 0) {
+      insights.push({ type: 'pattern', title: 'Top Diagnosis Patterns', severity: 'low', icon: TrendingUpIcon, description: 'Identifying frequent conditions helps optimize provider networks.', metrics: topDiagnoses.map(([diag, count]) => ({ label: diag, value: count + ' claims' })) });
+    }
+    return insights;
+  }, [caseData]);
+
+  const filteredInsights = useMemo(() => filter === 'all' ? insights : insights.filter(i => i.type === filter), [insights, filter]);
+
+  if (loading) return <div className="p-8 text-center text-gray-500"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>Analyzing data for insights...</div>;
+  if (!caseData) return <div className="p-8 text-center text-gray-500">No insights available.</div>;
+
+  return (
+    <div className="p-6">
+      <div className="mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div><h2 className="text-lg font-semibold text-gray-900">AI Insights & Analysis</h2><p className="text-sm text-gray-500 mt-1">{insights.length} insights generated</p></div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setFilter('all')} className={`px-3 py-1.5 text-sm font-medium rounded-lg ${filter === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>All</button>
+            <button onClick={() => setFilter('risk')} className={`px-3 py-1.5 text-sm font-medium rounded-lg ${filter === 'risk' ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Risks</button>
+            <button onClick={() => setFilter('opportunity')} className={`px-3 py-1.5 text-sm font-medium rounded-lg ${filter === 'opportunity' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Opps</button>
+            <button onClick={() => setFilter('pattern')} className={`px-3 py-1.5 text-sm font-medium rounded-lg ${filter === 'pattern' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Patterns</button>
+          </div>
+        </div>
+      </div>
+      {filteredInsights.length === 0 ? (
+        <div className="text-center py-12"><LightBulbIcon className="w-16 h-16 text-gray-300 mx-auto mb-4" /><p className="text-gray-500">No insights match filter</p></div>
+      ) : (
+        <div className="grid gap-4">
+          {filteredInsights.map((insight, idx) => {
+            const Icon = insight.icon;
+            return (
+              <div key={idx} className={`border ${SEVERITY_CONFIG[insight.severity].borderColor} rounded-lg p-5 bg-gradient-to-br ${SEVERITY_CONFIG[insight.severity].bgColor} to-white`}>
+                <div className="flex items-start gap-4">
+                  <div className={`flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center`}><Icon className={`w-5 h-5 ${SEVERITY_CONFIG[insight.severity].color}`} /></div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <h3 className="text-base font-semibold text-gray-900">{insight.title}</h3>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${insight.type === 'risk' ? 'bg-red-100 text-red-700' : insight.type === 'opportunity' ? 'bg-green-100 text-green-700' : insight.type === 'pattern' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{insight.type}</span>
+                    </div>
+                    <p className="text-sm text-gray-600 mt-1">{insight.description}</p>
+                    {insight.metrics && insight.metrics.length > 0 && (
+                      <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {insight.metrics.map((m, mi) => (
+                          <div key={mi} className="bg-white/50 rounded-lg p-2"><p className="text-xs text-gray-500">{m.label}</p><p className="text-sm font-semibold text-gray-900 truncate">{m.value}</p></div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {insights.length > 0 && (
+        <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4"><p className="text-xs text-gray-500 uppercase">Total Insights</p><p className="text-2xl font-bold text-gray-900 mt-1">{insights.length}</p></div>
+          <div className="bg-white rounded-lg shadow-sm border border-red-200 p-4"><p className="text-xs text-red-500 uppercase">Risks</p><p className="text-2xl font-bold text-red-600 mt-1">{insights.filter(i => i.type === 'risk').length}</p></div>
+          <div className="bg-white rounded-lg shadow-sm border border-green-200 p-4"><p className="text-xs text-green-500 uppercase">Opps</p><p className="text-2xl font-bold text-green-600 mt-1">{insights.filter(i => i.type === 'opportunity').length}</p></div>
+          <div className="bg-white rounded-lg shadow-sm border border-purple-200 p-4"><p className="text-xs text-purple-500 uppercase">Patterns</p><p className="text-2xl font-bold text-purple-600 mt-1">{insights.filter(i => i.type === 'pattern' || i.type === 'recommendation').length}</p></div>
+        </div>
+      )}
+    </div>
+  );
+}

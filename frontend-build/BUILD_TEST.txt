@@ -1,0 +1,3 @@
+# GMC Platform - Build Test
+
+This file forces a fresh build.

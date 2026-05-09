@@ -1,0 +1,142 @@
+
+// ActionBar Component - Sticky bottom action bar with context-aware buttons
+
+interface ActionBarProps {
+  caseStatus?: string;
+  canSave?: boolean;
+  canMatch?: boolean;
+  canProcess?: boolean;
+  canSubmit?: boolean;
+  onAction: (action: string) => void;
+  hasUnsavedChanges?: boolean;
+}
+
+export default function ActionBar({
+  caseStatus,
+  canSave,
+  canMatch,
+  canProcess,
+  canSubmit,
+  onAction,
+  hasUnsavedChanges = false,
+}: ActionBarProps) {
+  const getButtonConfig = () => {
+    const buttons = [];
+
+    // Always show save draft if allowed
+    if (canSave) {
+      buttons.push({
+        action: 'save_draft',
+        label: hasUnsavedChanges ? 'Save Changes' : 'Save Draft',
+        variant: 'secondary' as const,
+      });
+    }
+
+    // Context-aware primary actions
+    if (canMatch) {
+      buttons.push({
+        action: 'run_matching',
+        label: 'Run AI Matching',
+        variant: 'primary' as const,
+      });
+    }
+
+    if (canProcess) {
+      buttons.push({
+        action: 'process_ai',
+        label: 'Process with AI',
+        variant: 'primary' as const,
+      });
+    }
+
+    if (canSubmit) {
+      buttons.push({
+        action: 'submit_underwriter',
+        label: 'Submit to Underwriter',
+        variant: 'primary' as const,
+      });
+    }
+
+    // Secondary actions
+    if (caseStatus === 'ai_processed' || caseStatus === 'underwriter_review') {
+      buttons.push({
+        action: 'export',
+        label: 'Export Report',
+        variant: 'secondary' as const,
+      });
+    }
+
+    return buttons;
+  };
+
+  const buttons = getButtonConfig();
+  const hasPrimaryAction = buttons.some((b) => b.variant === 'primary');
+
+  // Don't render if no buttons
+  if (buttons.length === 0) return null;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 shadow-lg">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between py-3">
+          {/* Left side - Secondary actions */}
+          <div className="flex items-center space-x-2">
+            {buttons
+              .filter((b) => b.variant === 'secondary')
+              .map((button) => (
+                <button
+                  key={button.action}
+                  onClick={() => onAction(button.action)}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  {button.label}
+                </button>
+              ))}
+          </div>
+
+          {/* Right side - Primary actions */}
+          <div className="flex items-center space-x-3">
+            {buttons
+              .filter((b) => b.variant === 'primary')
+              .map((button) => (
+                <button
+                  key={button.action}
+                  onClick={() => onAction(button.action)}
+                  className="px-6 py-2.5 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                >
+                  {button.label}
+                </button>
+              ))}
+          </div>
+
+          {/* Status indicator on the far right (desktop) */}
+          <div className="hidden sm:flex items-center space-x-2">
+            <span className="text-xs text-gray-500">Status:</span>
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize {
+              caseStatus === 'ai_processed' ? 'bg-green-100 text-green-800' :
+              caseStatus === 'underwriter_review' ? 'bg-purple-100 text-purple-800' :
+              caseStatus === 'completed' ? 'bg-indigo-100 text-indigo-800' :
+              'bg-gray-100 text-gray-800'
+            }">
+              {caseStatus?.replace('_', ' ') || 'Unknown'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Mobile indicator bar */}
+      <div className="sm:hidden bg-gray-50 px-4 py-2 border-t border-gray-200">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">
+            Status: <span className="font-medium text-gray-700 capitalize">{caseStatus?.replace('_', ' ') || 'Unknown'}</span>
+          </span>
+          {hasPrimaryAction && (
+            <span className="text-xs text-blue-600 font-medium">
+              {buttons.filter((b) => b.variant === 'primary').length} action{buttons.filter((b) => b.variant === 'primary').length > 1 ? 's' : ''} available
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

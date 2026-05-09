@@ -1,0 +1,174 @@
+
+// CaseHeader Component - Displays case info, breadcrumb, status, quick actions
+
+import { useState } from 'react';
+import { useRouter } from 'next/router';
+
+interface CaseHeaderProps {
+  caseId: string;
+  clientName?: string;
+  policyType?: string;
+  status?: string;
+  onSave?: () => void;
+  onRefresh?: () => void;
+  saving?: boolean;
+  lastSaved?: string;
+}
+
+const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
+  draft: { label: 'Draft', color: 'text-gray-600', bgColor: 'bg-gray-100' },
+  uploaded: { label: 'Uploaded', color: 'text-blue-600', bgColor: 'bg-blue-100' },
+  matching: { label: 'Matching', color: 'text-yellow-600', bgColor: 'bg-yellow-100' },
+  'ai_processed': { label: 'AI Processed', color: 'text-green-600', bgColor: 'bg-green-100' },
+  underwriter_review: { label: 'Under Review', color: 'text-purple-600', bgColor: 'bg-purple-100' },
+  completed: { label: 'Completed', color: 'text-indigo-600', bgColor: 'bg-indigo-100' },
+};
+
+export default function CaseHeader({
+  caseId,
+  clientName,
+  policyType,
+  status = 'draft',
+  onSave,
+  onRefresh,
+  saving,
+  lastSaved,
+}: CaseHeaderProps) {
+  const router = useRouter();
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  
+  const statusInfo = statusConfig[status] || statusConfig.draft;
+  
+  const handleExport = (format: 'pdf' | 'xlsx' | 'csv') => {
+    window.open(`/api/cases/${caseId}/export?format=${format}`, '_blank');
+    setShowExportMenu(false);
+  };
+  
+  return (
+    <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16">
+          {/* Breadcrumb & Case Info */}
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => router.push('/cases')}
+              className="flex items-center text-sm text-gray-500 hover:text-gray-700"
+            >
+              <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              Cases
+            </button>
+            <span className="text-gray-400">/</span>
+            <div>
+              <h1 className="text-lg font-semibold text-gray-900 truncate max-w-xs sm:max-w-md">
+                {clientName || 'Loading...'}
+              </h1>
+              <p className="text-xs text-gray-500">
+                Case ID: {caseId} {policyType && `• ${policyType}`}
+              </p>
+            </div>
+          </div>
+          
+          {/* Status Badge & Actions */}
+          <div className="flex items-center space-x-3">
+            {/* Status Badge */}
+            <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${statusInfo.bgColor} ${statusInfo.color}`}>
+              <span className="w-2 h-2 rounded-full bg-current mr-2"></span>
+              {statusInfo.label}
+            </span>
+            
+            {/* Last Saved */}
+            {lastSaved && (
+              <span className="hidden sm:block text-xs text-gray-400">
+                Saved {new Date(lastSaved).toLocaleTimeString()}
+              </span>
+            )}
+            
+            {/* Save Button */}
+            {onSave && (
+              <button
+                onClick={onSave}
+                disabled={saving}
+                className="hidden sm:flex items-center px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+              >
+                {saving ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Saving...
+                  </>
+                ) : (
+                  'Save Draft'
+                )}
+              </button>
+            )}
+            
+            {/* Refresh Button */}
+            {onRefresh && (
+              <button
+                onClick={onRefresh}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                title="Refresh"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            )}
+            
+            {/* Export Dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                className="flex items-center px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+              >
+                <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Export
+                <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              
+              {showExportMenu && (
+                <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                  <button
+                    onClick={() => handleExport('pdf')}
+                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center"
+                  >
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                    </svg>
+                    PDF Report
+                  </button>
+                  <button
+                    onClick={() => handleExport('xlsx')}
+                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center"
+                  >
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Excel (XLSX)
+                  </button>
+                  <button
+                    onClick={() => handleExport('csv')}
+                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center"
+                  >
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10M3 14h10m-10-4h14m-5 4v1m0 0v1m0-1h1m-1 0h-1" />
+                    </svg>
+                    CSV
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}

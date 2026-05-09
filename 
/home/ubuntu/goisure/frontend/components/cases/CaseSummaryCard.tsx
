@@ -1,0 +1,182 @@
+
+// CaseSummaryCard Component - Quick overview card with key metrics
+
+import { ArrowUpIcon, ArrowDownIcon, CheckCircleIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline';
+
+interface SummaryCardProps {
+  caseData?: any;
+  metrics?: any;
+  nextAction?: any;
+  onActionClick?: (action: string) => void;
+}
+
+export default function CaseSummaryCard({
+  caseData,
+  metrics,
+  nextAction,
+  onActionClick,
+}: SummaryCardProps) {
+  const memberCount = caseData?.case?.employee_count || 0;
+  const totalClaims = metrics?.total_claims || 0;
+  const lossRatio = metrics?.loss_ratio || 0;
+  const estimatedPremium = metrics?.estimated_premium || 0;
+  const qualityRating = metrics?.match_quality?.quality_rating || 'N/A';
+  const recommendedTier = metrics?.recommended_coverage_tier || 'N/A';
+
+  const getLossRatioColor = (ratio: number) => {
+    if (ratio < 40) return 'text-green-600 bg-green-50';
+    if (ratio < 60) return 'text-blue-600 bg-blue-50';
+    if (ratio < 70) return 'text-yellow-600 bg-yellow-50';
+    return 'text-red-600 bg-red-50';
+  };
+
+  const getQualityColor = (rating: string) => {
+    switch (rating) {
+      case 'Excellent': return 'text-green-600 bg-green-50';
+      case 'Good': return 'text-blue-600 bg-blue-50';
+      case 'Fair': return 'text-yellow-600 bg-yellow-50';
+      case 'Poor': return 'text-red-600 bg-red-50';
+      default: return 'text-gray-600 bg-gray-50';
+    }
+  };
+
+  const metricCards = [
+    {
+      label: 'Total Enrolled',
+      value: memberCount.toLocaleString(),
+      icon: '👥',
+      color: 'bg-blue-50 text-blue-600',
+      change: null,
+    },
+    {
+      label: 'Total Claims',
+      value: totalClaims,
+      icon: '📄',
+      color: 'bg-purple-50 text-purple-600',
+      change: caseData?.claims?.unmatched_count > 0 ? `-${caseData.claims.unmatched_count} unmatched` : null,
+    },
+    {
+      label: 'Loss Ratio',
+      value: `${lossRatio.toFixed(1)}%`,
+      icon: '📊',
+      color: getLossRatioColor(lossRatio),
+      change: lossRatio > 50 ? 'Above target' : 'Within target',
+      changeType: lossRatio > 50 ? 'down' : 'up',
+    },
+    {
+      label: 'Est. Premium',
+      value: estimatedPremium.toLocaleString(),
+      icon: '💰',
+      color: 'bg-green-50 text-green-600',
+      change: `₹${metrics?.premium_impact?.total_adjustment?.toLocaleString() || 0}`,
+      changeType: metrics?.premium_impact?.change_percent >= 0 ? 'up' : 'down',
+    },
+  ];
+
+  const impact = caseData?.impact || {};
+  const factor = impact.factors?.[0];
+
+  return (
+    <div className="space-y-4">
+      {/* Metric Cards */}
+      <div className="grid grid-cols-2 gap-3">
+        {metricCards.map((card, idx) => (
+          <div key={idx} className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase">{card.label}</p>
+                <p className="text-xl font-bold text-gray-900 mt-1">{card.value}</p>
+                {card.change && (
+                  <p className={`text-xs mt-1 flex items-center ${
+                    card.changeType === 'down' ? 'text-red-500' : 'text-green-500'
+                  }`}>
+                    {card.changeType === 'down' ? (
+                      <ArrowDownIcon className="w-3 h-3 mr-0.5" />
+                    ) : (
+                      <ArrowUpIcon className="w-3 h-3 mr-0.5" />
+                    )}
+                    {card.change}
+                  </p>
+                )}
+              </div>
+              <span className={`text-xl ${card.color} p-2 rounded-lg`}>{card.icon}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Quality Score & Tier */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-gray-500 uppercase">Match Quality</p>
+            <p className={`text-lg font-semibold mt-1 ${getQualityColor(qualityRating).split(' ')[1]}`}>
+              {qualityRating}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs font-medium text-gray-500 uppercase">Coverage Tier</p>
+            <p className="text-lg font-semibold text-indigo-600 mt-1">{recommendedTier}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Premium Impact */}
+      {factor && (
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg shadow-sm border border-blue-100 p-4">
+          <div className="flex items-start">
+            <div className="flex-shrink-0">
+              <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
+                {factor.severity === 'high' ? (
+                  <ExclamationCircleIcon className="w-5 h-5 text-red-500" />
+                ) : (
+                  <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                )}
+              </div>
+            </div>
+            <div className="ml-3 flex-1">
+              <p className="text-sm font-medium text-gray-900">{factor.factor}</p>
+              <p className="text-xs text-gray-500 mt-0.5">{factor.justification}</p>
+              <p className="text-sm font-semibold mt-1">
+                <span className={factor.loading ? 'text-red-600' : 'text-green-600'}>
+                  {factor.discount && `+${factor.discount} discount`}
+                  {factor.loading && `${factor.loading} loading`}
+                </span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Next Action Button */}
+      {nextAction && onActionClick && (
+        <button
+          onClick={() => onActionClick(nextAction.action)}
+          className={`w-full py-3 px-4 rounded-lg font-medium transition-colors ${
+            nextAction.priority === 'high'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : nextAction.priority === 'medium'
+              ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
+          }`}
+        >
+          {nextAction.label}
+        </button>
+      )}
+
+      {/* Status Indicator */}
+      <div className="bg-gray-50 rounded-lg p-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">Case Status</span>
+          <span className={`text-xs font-medium ${
+            caseData?.case?.status === 'ai_processed' ? 'text-green-600' :
+            caseData?.case?.status === 'underwriter_review' ? 'text-purple-600' :
+            'text-blue-600'
+          }`}>
+            {caseData?.case?.status?.replace('_', ' ').toUpperCase()}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
