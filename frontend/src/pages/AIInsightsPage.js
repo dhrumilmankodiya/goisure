@@ -498,7 +498,11 @@ export default function AIInsightsPage() {
                 <div>
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">💰 Quotation — {plans.length} Plan Options</h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {plans.map((plan, i) => (
+                    {plans.map((plan, i) => {
+                      // Backend sends premium_per_lac, frontend expects premium + total_annual_premium
+                      const premium = plan.premium_per_lac || plan.premium || 0;
+                      const emoji = plan.emoji || ["📋","📊","🏆"][i] || "📋";
+                      return (
                       <div key={i} className={`relative rounded-xl border-2 p-5 ${
                         i === 1 ? 'border-blue-600 shadow-lg shadow-blue-100 ring-2 ring-blue-100' : 'border-gray-200 hover:border-gray-300'
                       } bg-white`}>
@@ -506,14 +510,16 @@ export default function AIInsightsPage() {
                           <div className="absolute -top-3 left-1/2 -translate-x-1/2"><span className="bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full">⭐ Recommended</span></div>
                         )}
                         <div className="text-center mb-4">
-                          <div className="text-3xl mb-1">{plan.emoji || '📋'}</div>
+                          <div className="text-3xl mb-1">{emoji}</div>
                           <h4 className="text-lg font-bold text-gray-900">{plan.name}</h4>
-                          <p className="text-xs text-gray-500 mt-0.5">{plan.tagline || ''}</p>
+                          <p className="text-xs text-gray-500 mt-0.5">{plan.tagline || plan.description || ''}</p>
                           <div className="mt-3">
-                            <span className="text-3xl font-black text-gray-900">{fmtLac(plan.premium)}</span>
+                            <span className="text-3xl font-black text-gray-900">{fmtLac(premium)}</span>
                             <div className="text-xs text-gray-500 mt-0.5">per lac sum insured</div>
                           </div>
-                          <div className="text-sm font-bold text-blue-600 mt-1">Total: {fmtLac(plan.total_annual_premium || plan.premium)}</div>
+                          {plan.total_annual_premium || plan.premium ? (
+                            <div className="text-sm font-bold text-blue-600 mt-1">Total: {fmtLac(plan.total_annual_premium || premium)}</div>
+                          ) : null}
                         </div>
                         {plan.features && (
                           <div className="space-y-1.5 mb-4">
@@ -529,7 +535,7 @@ export default function AIInsightsPage() {
                           </div>
                         )}
                         <div className="text-xs text-gray-400 text-center">Loss Ratio: {plan.loss_ratio || metrics.loss_ratio}%</div></div>
-                    ))}
+                      )})}
                   </div>
                 </div>
               )}
@@ -774,7 +780,11 @@ export default function AIInsightsPage() {
                 <p className="text-sm text-gray-500 mt-1">Based on {caseData.name} profile — Loss Ratio: {metrics.loss_ratio}%</p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {plans.map((plan, i) => (
+                {plans.map((plan, i) => {
+                  // Backend sends premium_per_lac, frontend expects premium
+                  const premium = plan.premium_per_lac || plan.premium || 0;
+                  const emoji = plan.emoji || ["📋","📊","🏆"][i] || "📋";
+                  return (
                   <div key={i} className={`relative rounded-2xl border-2 p-6 ${
                     i === 1 ? 'border-blue-600 shadow-xl shadow-blue-100' : 'border-gray-200 shadow-sm'
                   } bg-white`}>
@@ -784,16 +794,16 @@ export default function AIInsightsPage() {
                       </div>
                     )}
                     <div className="text-center">
-                      <div className="text-4xl mb-2">{plan.emoji || '📋'}</div>
+                      <div className="text-4xl mb-2">{emoji}</div>
                       <h3 className="text-xl font-bold text-gray-900">{plan.name}</h3>
-                      <p className="text-sm text-gray-500 mt-1">{plan.description}</p>
+                      <p className="text-sm text-gray-500 mt-1">{plan.description || plan.tagline || ''}</p>
                     </div>
                     <div className="my-4 py-4 border-y border-gray-100 text-center">
-                      <div className="text-3xl font-black text-gray-900">{fmtLac(plan.premium)}</div>
+                      <div className="text-3xl font-black text-gray-900">{fmtLac(premium)}</div>
                       <div className="text-sm text-gray-500">per lac sum insured</div>
                     </div>
                     <div className="text-center font-bold text-blue-600 mb-4">
-                      Total Annual: {fmtLac(plan.total_annual_premium || plan.premium)}
+                      Total Annual: {fmtLac(plan.total_annual_premium || premium)}
                     </div>
                     {plan.features && (
                       <div className="space-y-2 mb-4">
@@ -805,14 +815,16 @@ export default function AIInsightsPage() {
                         ))}
                       </div>
                     )}
-                    {(plan.loading || plan.discount) && (
+                    {(plan.loading || plan.discount || plan.total_loading_percent > 0 || plan.total_discount_percent > 0) && (
                       <div className="text-xs text-center py-2">
+                        {plan.total_loading_percent > 0 && <span className="text-red-600 font-semibold">+{plan.total_loading_percent}% loading</span>}
+                        {plan.total_discount_percent > 0 && <span className="text-green-600 font-semibold">-{plan.total_discount_percent}% discount</span>}
                         {plan.loading > 0 && <span className="text-red-600 font-semibold">+{plan.loading}% loading</span>}
                         {plan.discount > 0 && <span className="text-green-600 font-semibold">-{plan.discount}% discount</span>}
                       </div>
                     )}
                   </div>
-                ))}
+                )})}
               </div>
             </>
           )}
