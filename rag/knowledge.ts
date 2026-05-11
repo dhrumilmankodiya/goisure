@@ -3,20 +3,39 @@
 // UPDATED: Field mapping instructions based on QA test results (May 8, 2026)
 //
 // IMPORTANT FIELD MAPPING NOTES:
+// UPDATED: May 11, 2026 — Gender, Date Parsing, and Claims Amount fixes
+//
 // 1. Enrollment records may NOT have an Employee_ID/EmployeeCode field.
 //    When absent, match claims to enrollment using NAME + DOB + Relationship (not just name alone).
 //    Claims often have: EMPLOYEE_NO, INSURED_OR_EMPLOYEE_NAME, Patient_name
 //    Fallback matching order: EMPLOYEE_NO (exact) → Patient_name + AGE (fuzzy) → INSURED_OR_EMPLOYEE_NAME (fuzzy)
 //
-// 2. Claim amounts — use TOTAL_AMOUNT_APPROVED as the primary amount field.
-//    DO NOT use AMOUNT_CLAIMED_AL_REQUESTED (includes rejected/deducted amounts).
-//    Fields to check in order: TOTAL_AMOUNT_APPROVED → Net_Amount_paid_Including_GST_After_TDS → Total_Amount_Claimed
+// 2. Claim amounts — use the following priority order:
+//    a) Amount_Approved / AMOUNT_APPROVED / APPROVED_AMOUNT (BEST — approved amount)
+//    b) NET_AMOUNT_PAID / Net_Amount_Paid (paid amount)
+//    c) INCURREDAMOUNT / Incurred_Amount (incurred liability)
+//    d) CLAIMEDAMOUNT / AMOUNT_CLAIMED / Claimed Amount (claimed — use when no approved/paid)
+//    e) TOTAL_AMOUNT_APPROVED (legacy fallback)
 //    Treat '-' (dash) as 0. Strip commas, ₹ symbols, and whitespace before parsing.
+//    NEVER use as amounts: employee IDs, policy numbers, claim numbers, hospital codes.
 //
-// 3. Gender normalization: accept Male/MALE/male, FEMALE/Female/female, Other.
-//    DO NOT treat case differences as new genders — normalize to title case.
+// 3. Gender normalization (CRITICAL — enrollment often lacks gender, use claims_data):
+//    - The GENDER field exists in claims_data, NOT in enrollment (raw_data).
+//    - Values: 'M'/'F' (single uppercase letter), or 'Male'/'Female'/'male'/'female'.
+//    - Always normalize: M/m/Male/male → 'Male', F/f/Female/female → 'Female'.
+//    - Gender distribution must be computed from claims_data GENDER, not structured_data.
+//    - Output as PERCENTAGE of claims (not raw counts): Male 47%, Female 53%, Other 0%.
 //
-// 4. Sum_Insured may be called "Sum Insured", "BASICS_SUM_INSURED", "SumInsured", or "BALANCE_SI".
+// 4. Date parsing for quarterly trends:
+//    - DOA field format: "3/25/2026 12:00:00 AM" (MM/DD/YYYY with time)
+//    - INWARD_DATE format: "06-APR-2026" (DD-MMM-YYYY)
+//    - POLICY_START_DATE format: "2025-05-13T00:00:00" (ISO 8601)
+//    - Parse all formats to YYYY-MM before quarter bucketing.
+//    - Buckets: Q1 FY24-25 (2024-04 to 2024-06), Q2 FY24-25 (2024-07 to 2024-09),
+//               Q3 FY24-25 (2024-10 to 2024-12), Q4 FY24-25 (2025-01 to 2025-03),
+//               Q1 FY25-26 (2025-04 to 2025-06)
+//
+// 5. Sum_Insured may be called "Sum Insured", "BASICS_SUM_INSURED", "SumInsured", or "BALANCE_SI".
 //    Use the first non-zero, non-empty value found.
 
 export interface ClaimRecord {

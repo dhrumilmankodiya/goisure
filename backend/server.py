@@ -1260,7 +1260,7 @@ def get_claim_amount(claim: Dict) -> float:
         "ChequeAmt", "cheque_amt", "CHEQUE_AMT",
         # Claimed amounts (use these as fallback)
         "Amount_Claimed", "amount_claimed",
-        "Claimed_Amount", "CLAIMED_AMOUNT", "claimed_amount", "CLAIMEDAMOUNT",
+        "Claimed Amount", "CLAIMED AMOUNT", "claimed_amount", "CLAIMEDAMOUNT",  # RAG01 / Oriental Insurance
         "Claim_Amount", "CLAIM_AMOUNT", "claim_amount",
         "ClaimAmount", "CLAIMAMOUNT",
         "Billed_Amount", "BILLING_AMOUNT", "billed_amount",
@@ -1272,9 +1272,12 @@ def get_claim_amount(claim: Dict) -> float:
     ]
     for key in amt_keys:
         val = claim.get(key)
-        if val is not None:
+        if val is not None and val != '-' and val != '':
             try:
-                return float(str(val).replace(",", "").replace("₹", "").replace("Rs", "").strip())
+                f = float(str(val).replace(",", "").replace("₹", "").replace("Rs", "").strip())
+                # Only return if non-zero (0 means field exists but no amount — try next field)
+                if f > 0:
+                    return f
             except:
                 pass
     return 0.0
@@ -1676,11 +1679,12 @@ async def get_analytics(case_id: str, request: Request = None):
             }
         },
         "demographics": {
-            "gender_distribution": {"Male": int(matched_count * 0.6), "Female": int(matched_count * 0.4)},
+            "gender_distribution": {"Male": 60.0, "Female": 40.0, "Other": 0.0},  # placeholder — process-ai will compute from claims_data
             "total_enrolled": len(enrollment_data)
         },
         "risk_indicators": [],
-        "recommendations": []
+        "recommendations": [],
+        "premium_three_plans": case.get("plans", [])  # populated by process-ai
     }
     return analytics
 @api_router.post("/cases/{case_id}/process-ai")
@@ -2301,12 +2305,25 @@ Generate the merged data and AI insights.respond with JSON only."""
     # This ensures analytics always work even when enrollment matching fails
     from collections import Counter
     
+    # Gender: normalize M/F/Male/Female to proper percentages from claims_data GENDER field
     gender_map = {"Male": 0, "Female": 0, "Other": 0}
     for c in claims_data:
         g = str(c.get("GENDER") or "").strip()
-        if g in ["M", "m"]: gender_map["Male"] += 1
-        elif g in ["F", "f"]: gender_map["Female"] += 1
+        # Normalize: M/m → Male, F/f → Female, Male/Female/male/female → title case, Other/empty → Other
+        if g.upper() == "M" or g.lower() == "male": gender_map["Male"] += 1
+        elif g.upper() == "F" or g.lower() == "female": gender_map["Female"] += 1
         else: gender_map["Other"] += 1
+    
+    # Compute gender distribution as % of claims (not enrolled — claims are what have gender data)
+    total_claims_with_gender = gender_map["Male"] + gender_map["Female"] + gender_map["Other"]
+    if total_claims_with_gender > 0:
+        gender_distribution_pct = {
+            "Male": round(gender_map["Male"] / total_claims_with_gender * 100, 1),
+            "Female": round(gender_map["Female"] / total_claims_with_gender * 100, 1),
+            "Other": round(gender_map["Other"] / total_claims_with_gender * 100, 1)
+        }
+    else:
+        gender_distribution_pct = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
     
     claim_age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
     for c in claims_data:
@@ -2317,9 +2334,13 @@ Generate the merged data and AI insights.respond with JSON only."""
         elif a <= 55: claim_age_bands["46-55"] += 1
         else: claim_age_bands["55+"] += 1
     
-    # Use claim-level gender if matched gender is all zeros
-    if sum(analytics["demographics"]["gender_distribution"].values()) == 0:
-        analytics["demographics"]["gender_distribution"] = gender_map
+    # Always compute gender from claims_data — enrollment often lacks gender field
+    # Use % of claims with gender, fallback to 60/40 estimate if no claims data
+    if total_claims_with_gender > 0:
+        analytics["demographics"]["gender_distribution"] = gender_distribution_pct
+    elif analytics["demographics"]["gender_distribution"].get("Male", 0) == 0 and analytics["demographics"]["gender_distribution"].get("Female", 0) == 0:
+        # No gender data available — use reasonable default
+        analytics["demographics"]["gender_distribution"] = {"Male": 60.0, "Female": 40.0, "Other": 0.0}
     
     # Claim type breakdown from AILMENT field
     ailment_counter = Counter()
@@ -2398,6 +2419,7 @@ Generate the merged data and AI insights.respond with JSON only."""
         base_rate = (impact.get("base_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
         final_rate = (impact.get("enrollment_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
         risk_val = risk_score.get("risk_score", 50)
+        total_premium = impact.get("enrollment_premium", total_enrolled * 5000)
         
         rec_id = "standard"
         if risk_val >= 75:
@@ -2408,28 +2430,41 @@ Generate the merged data and AI insights.respond with JSON only."""
             rec_id = "essential"
         
         plans = [
-            {"id": "essential", "name": "Essential Plan", "tier": "Entry Level",
+            {"id": "essential", "plan_type": "essential", "name": "Essential Plan", "tier": "Entry Level",
              "description": "Base coverage without risk loadings",
-             "premium_per_lac": round(base_rate * 0.85, 0), "coverage_tier": "Basic",
+             "premium_per_lac": round(base_rate * 0.85, 0), "premium": round(base_rate * 0.85 * total_enrolled * avg_si / 100000, 0),
+             "coverage": "Basic", "coverage_tier": "Basic",
              "sum_insured_range": {"min": 50000, "max": 500000},
              "features": ["Base sum insured coverage", "Standard exclusions", "No additional loadings", "Basic hospitalization cover"],
-             "recommended": rec_id == "essential"},
-            {"id": "standard", "name": "Standard Plan", "tier": "Mid-Market",
+             "exclusions": ["Pre-existing conditions", "Cosmetic treatments", "Adventure sports"],
+             "suitability": "Best for young, healthy teams with no prior claims history.",
+             "recommended": rec_id == "essential", "total_annual_premium": round(base_rate * 0.85 * total_enrolled * avg_si / 100000, 0)},
+            {"id": "standard", "plan_type": "standard", "name": "Standard Plan", "tier": "Mid-Market",
              "description": "Recommended coverage with applied adjustments",
-             "premium_per_lac": round(final_rate, 0), "coverage_tier": "Comprehensive",
+             "premium_per_lac": round(final_rate, 0), "premium": round(final_rate * total_enrolled * avg_si / 100000, 0),
+             "coverage": "Comprehensive", "coverage_tier": "Comprehensive",
              "sum_insured_range": {"min": 100000, "max": 1000000},
              "features": ["Full sum insured coverage", "Maternity benefit", "Day care procedures", "Ambulance cover"],
-             "recommended": rec_id == "standard"},
-            {"id": "enhanced", "name": "Enhanced Plan", "tier": "Premium Protection",
+             "exclusions": ["Pre-existing conditions (waiting period)", "Cosmetic treatments", "Self-inflicted injuries"],
+             "suitability": "Recommended for mid-sized teams with moderate claims experience.",
+             "recommended": rec_id == "standard", "total_annual_premium": round(final_rate * total_enrolled * avg_si / 100000, 0)},
+            {"id": "enhanced", "plan_type": "enhanced", "name": "Enhanced Plan", "tier": "Premium Protection",
              "description": "Enhanced coverage with safety buffer",
-             "premium_per_lac": round(final_rate * 1.05, 0), "coverage_tier": "Premium",
+             "premium_per_lac": round(final_rate * 1.05, 0), "premium": round(final_rate * 1.05 * total_enrolled * avg_si / 100000, 0),
+             "coverage": "Premium", "coverage_tier": "Premium",
              "sum_insured_range": {"min": 200000, "max": 2000000},
              "features": ["Enhanced sum insured", "No co-pay for 60+ age", "International second opinion", "Annual health checkup"],
-             "recommended": rec_id == "enhanced"},
+             "exclusions": ["Cosmetic treatments", "Adventure sports", "Self-inflicted injuries"],
+             "suitability": "Recommended for large teams or high-loss-ratio groups requiring comprehensive coverage.",
+             "recommended": rec_id == "enhanced", "total_annual_premium": round(final_rate * 1.05 * total_enrolled * avg_si / 100000, 0)},
         ]
     except Exception as e:
         logger.warning(f"Underwriting analysis failed: {e}")
         metrics, risk_score, factors, impact, plans = {}, {}, [], {}, []
+    
+    # Always add premium_three_plans to analytics before storing (both success and failure paths)
+    analytics["premium_three_plans"] = plans
+    analytics["demographics"]["gender_distribution"] = analytics["demographics"].get("gender_distribution", {"Male": 0.0, "Female": 0.0, "Other": 0.0})
     
     # Update case with structured data
     await db.cases.update_one(
@@ -2438,7 +2473,7 @@ Generate the merged data and AI insights.respond with JSON only."""
             "structured_data": structured_data,
             "ai_insights": ai_insights,
             "key_stats": key_stats,
-            "analytics": analytics,
+            "analytics": analytics,  # Updated analytics with premium_three_plans + correct gender_distribution
             "claims_analysis": analytics.get("claims_analysis", {}),
             "metrics": metrics,
             "impact": impact,
@@ -3143,25 +3178,27 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict,
     chronic_members_count = len(chronic_members)
     chronic_members_pct = round(chronic_members_count / max(total_enrolled, 1) * 100, 1)
     
-    # Gender distribution — from structured_data AND claims_data fallback
-    gender_dist = {"Male": 0, "Female": 0, "Other": 0}
-    for r in structured_data:
-        g = str(r.get("Gender", "")).strip()
-        if g.lower() in ["male", "m"]: gender_dist["Male"] += 1
-        elif g.lower() in ["female", "f"]: gender_dist["Female"] += 1
-        else: gender_dist["Other"] += 1
-    
-    # If no gender from structured_data, use claims_data GENDER
-    if gender_dist["Male"] == 0 and gender_dist["Female"] == 0 and claims_data:
+    # ── Gender distribution: ONLY from claims_data GENDER field ──
+    # Enrollment (structured_data) often lacks gender field entirely.
+    # claims_data has GENDER field with M/F values — use this exclusively.
+    gender_from_claims = {"Male": 0, "Female": 0, "Other": 0}
+    if claims_data:
         for c in claims_data:
             g = str(c.get("GENDER") or "").strip()
-            if g == "M": gender_dist["Male"] += 1
-            elif g == "F": gender_dist["Female"] += 1
+            if g.upper() == "M" or g.lower() == "male": gender_from_claims["Male"] += 1
+            elif g.upper() == "F" or g.lower() == "female": gender_from_claims["Female"] += 1
+            else: gender_from_claims["Other"] += 1
     
-    gender_distribution = {k: round(v / max(total_enrolled, 1) * 100, 1) for k, v in gender_dist.items()}
-    # If percentages are all 0 (because gender_dist has raw counts not scaled), use raw counts
-    if gender_distribution["Male"] == 0 and gender_distribution["Female"] == 0:
-        gender_distribution = {"Male": gender_dist["Male"], "Female": gender_dist["Female"], "Other": gender_dist["Other"]}
+    # Compute gender distribution as % of claims (not enrolled — claims are what have gender data)
+    total_with_gender = gender_from_claims["Male"] + gender_from_claims["Female"] + gender_from_claims["Other"]
+    if total_with_gender > 0:
+        gender_distribution = {
+            "Male": round(gender_from_claims["Male"] / total_with_gender * 100, 1),
+            "Female": round(gender_from_claims["Female"] / total_with_gender * 100, 1),
+            "Other": round(gender_from_claims["Other"] / total_with_gender * 100, 1)
+        }
+    else:
+        gender_distribution = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
     
     # Claim concentration (top 3 members as % of total)
     member_claim_totals = sorted(
@@ -3769,40 +3806,68 @@ async def get_claim_breakdown(case_id: str, request: Request):
         if emp_id and name:
             emp_id_to_name[emp_id] = name
     
-    # Diagnosis field names (try all variants — different insurers use different columns)
-    diag_fields = ["AILMENT", "DISEASE OR AILMENT", "DIAGNOSIS", "Diagnosis",
-                   "AILMENT_ICD", "CLAIM_TYPE", "CLAIM_TYPE_1", "CATEGORY",
-                   "Nature_of_illness", "Nature_of_Illness"]
+    # Diagnosis field names (try ALL variants — different insurers use different columns)
+    # Priority order: most specific first, so we get the best match
+    diag_fields = [
+        # Most specific diagnosis fields
+        "Pdig", "pdig",                    # RAG01 / Oriental Insurance
+        "DiseaseCategory", "disease_category",  # RAG01
+        "FINAL_DIAGNOSIS", "Final_Diagnosis",  # Care Health Insurance
+        "DISEASE_NAME_LEVEL_III", "DISEASE_NAME_LEVEL_II",  # Care Health / ITGI
+        "ICD_CODE_LEVEL_3_DESCRIPTION", "ICD_CODE_LEVEL_2_DESCRIPTION", "ICD_CODE_LEVEL_1_DESCRIPTION",  # ITGI
+        "Diagnosis", "DIAGNOSIS", "diagnosis",  # Generic
+        "AILMENT", "DISEASE OR AILMENT", "Ailment", "ailment",  # Various insurers
+        "AILMENT_ICD", "ICD", "icd",         # ICD codes
+        "Sec_Treat", "Sec_Treatment",       # Secondary treatment
+        "TreatmentType", "treatment_type",   # Surgical / Medical / Day care
+        "CLAIM_TYPE", "Claim Type", "CLAIM_TYPE_1",  # Claim type
+        "CATEGORY", "Category", "Nature_of_illness", "Nature_of_Illness",
+        "grp_diagnosis", "grp_diagnosis_icd10",  # Grouped diagnosis
+    ]
     
-    chronic_kws  = {"diabetes", "hypertension", "asthma", "copd", "arthritis",
-                    "heart", "hypertensive", "diabetic", "hyperthyroid", "hypothyroid",
-                    "cholesterol", "chronic", "pcod", "thyroid", "obesity", "morbid",
-                    "renal", "kidney"}
+    chronic_kws  = {"diabetes", "hypertension", "bp", "high blood pressure", "htn",
+                    "asthma", "copd", "arthritis", "heart", "hypertensive", "diabetic",
+                    "hyperthyroid", "hypothyroid", "cholesterol", "chronic", "pcod",
+                    "thyroid", "obesity", "morbid", "renal", "kidney", "gbs",
+                    "guillain-barr", "syndrom"}
     cardio_kws   = {"cardiac", "heart", "myocardial", "infarction", "angina",
                     "valve", "aortic", "coronary", "tachycardia", "arrhythmia",
-                    "heart failure"}
+                    "heart failure", "chest pain", "cardio"}
     gastro_kws   = {"gastro", "colon", "intestinal", "liver", "hepatitis", "pancreas",
-                    "ulcer", "appendicitis", "bowel", "diarrhea", "dysentery", "jaundice"}
+                    "ulcer", "appendicitis", "bowel", "diarrhea", "dysentery", "jaundice",
+                    "abdomen", "gastritis", "food intolerance", "feeding intolerance",
+                    "vomiting", "nausea"}
     accident_kws = {"accident", "fracture", "trauma", "injury", "fractures", "wound",
-                    "fall", "rta", "road"}
+                    "fall", "rta", "road", "burn", "sprain", "dislocation", "contusion"}
     surgery_kws  = {"surgery", "surgical", "laparoscopy", "bypass", "stent",
                     "transplant", "angiography", "angioplasty", "cabg", "hysterectomy",
                     "appendectomy", "cholecystectomy", "arthroplasty", "prostatectomy",
-                    "mastectomy", "lobectomy"}
+                    "mastectomy", "lobectomy", "discectomy", "laminectomy", "arthroscopy",
+                    "operative", "operation", "excision", "biopsy"}
     maternity_kws= {"delivery", "childbirth", "pregnancy", "maternity", "cesarean",
                     "lscs", "normal delivery", "c section", "obstetric", "gravida",
-                    "multigravida", "pcos", "miscarriage", "abortion"}
+                    "multigravida", "pcos", "miscarriage", "abortion", " primi",
+                    "primi for", "primigravida", "g1 -", "antepartum", "postpartum",
+                    "miscarriage", "ectopic"}
     preventive_kws={"checkup", "screening", "vaccination", "immunization", "annual",
-                    "preventive", "master health", "health check"}
+                    "preventive", "master health", "health check", "wellness"}
     cancer_kws   = {"cancer", "carcinoma", "tumor", "malignant", "oncology",
                     "chemotherapy", "radiation", "leukemia", "lymphoma", "melanoma",
-                    "sarcoma", "blastoma"}
+                    "sarcoma", "blastoma", "neoplasm"}
     neuro_kws    = {"stroke", "brain", "neural", "spine", "spinal", "meningitis",
-                    "encephalitis", "paralysis", "epilepsy", "seizure", "parkinson"}
+                    "encephalitis", "paralysis", "epilepsy", "seizure", "parkinson",
+                    "cervical disc", "disc disorder", "radiculopathy", "neuropathy",
+                    "migraine", "headache", "cns"}
     ortho_kws    = {"bone", "joint", "orthopedic", "ortho", "knee", "hip", "ligament",
-                    "meniscus", "arthroscopy"}
+                    "meniscus", "arthroscopy", "fractures", "musculoskeletal",
+                    "connective tissue", "sprain", "strain", "back pain", "neck pain",
+                    "osteoarthritis", "arthritis", "osteoporosis"}
     eye_ent_kws  = {"cataract", "retina", "glaucoma", "lasik", "vision", "ear",
-                    "nose", "throat", "sinus", "tonsil", "ophthalmology", " ENT"}
+                    "nose", "throat", "sinus", "tonsil", "ophthalmology", " ENT",
+                    "dental", "oral", "hearing"}
+    infectious_kws = {"pyrexia", "sepsis", "fever", "infection", "infectious", "malaria",
+                      "dengue", "typhoid", "viral", "bacterial", "pneumonia", "tb",
+                      "tuberculosis", "hiv", "hepatitis"}
     
     cat_order = [
         ("Cancer & Critical Illness", cancer_kws),
@@ -3813,18 +3878,20 @@ async def get_claim_breakdown(case_id: str, request: Request):
         ("Surgery",                  surgery_kws),
         ("Orthopedic",               ortho_kws),
         ("Eye & ENT",                eye_ent_kws),
+        ("Infectious Diseases",      infectious_kws),
         ("Accidents & Trauma",        accident_kws),
         ("Chronic Conditions",        chronic_kws),
         ("Preventive Care",          preventive_kws),
     ]
     
     categories = {cat: {"count": 0, "claimed": 0, "approved": 0, "members": set()}
-                  for cat in [c[0] for c in cat_order] + ["Other"]}
+                  for cat in [c[0] for c in cat_order] + ["Other", "Infectious Diseases"]}
     colors = {
         "Cancer & Critical Illness": "#7c3aed", "Cardiovascular": "#dc2626",
         "Gastrointestinal": "#f97316", "Neurological": "#8b5cf6",
         "Maternity & Childbirth": "#ec4899", "Surgery": "#eab308",
         "Orthopedic": "#06b6d4", "Eye & ENT": "#14b8a6",
+        "Infectious Diseases": "#f97316",
         "Accidents & Trauma": "#f59e0b", "Chronic Conditions": "#ef4444",
         "Preventive Care": "#22c55e", "Other": "#64748b"
     }
@@ -3946,28 +4013,53 @@ async def get_claim_trends(case_id: str, request: Request):
     current_lr = round((total_approved / max(estimated_premium, 1)) * 100, 1) if estimated_premium else 0
     
     # Real loss ratio trend: use DATE_OF_ADMISSION to bucket claims into quarters
+    # FY24-25: Apr 2024 - Mar 2025 | FY25-26: Apr 2025 - Mar 2026
     quarters_map = {
         "Q1 FY24-25": ("2024-04", "2024-06"),
         "Q2 FY24-25": ("2024-07", "2024-09"),
         "Q3 FY24-25": ("2024-10", "2024-12"),
         "Q4 FY24-25": ("2025-01", "2025-03"),
         "Q1 FY25-26": ("2025-04", "2025-06"),
+        "Q2 FY25-26": ("2025-07", "2025-09"),
+        "Q3 FY25-26": ("2025-10", "2025-12"),
+        "Q4 FY25-26": ("2026-01", "2026-03"),
     }
     
-    quarters = ["Q1 FY24-25", "Q2 FY24-25", "Q3 FY24-25", "Q4 FY24-25", "Q1 FY25-26"]
+    quarters = ["Q1 FY24-25", "Q2 FY24-25", "Q3 FY24-25", "Q4 FY24-25", "Q1 FY25-26", "Q2 FY25-26", "Q3 FY25-26", "Q4 FY25-26"]
     q_claimed = {q: 0.0 for q in quarters}
     q_approved = {q: 0.0 for q in quarters}
     q_count = {q: 0 for q in quarters}
     
+    # ── Parse date to YYYY-MM format (handles multiple input formats) ──
+    def parse_date_to_yyyy_mm(v: str) -> str:
+        """Convert various date formats to YYYY-MM for quarter bucketing."""
+        import re
+        v = str(v).strip()
+        # Already "2025-05-13T00:00:00" or "2025-05-13" → take first 7
+        if re.match(r'^\d{4}-\d{2}', v):
+            return v[:7]
+        # "26-MAR-2026" or "06-APR-2026" format
+        m = re.match(r'^(\d{1,2})-([A-Z]{3})-(\d{4})$', v, re.IGNORECASE)
+        if m:
+            months = {'JAN':'01','FEB':'02','MAR':'03','APR':'04','MAY':'05','JUN':'06',
+                      'JUL':'07','AUG':'08','SEP':'09','OCT':'10','NOV':'11','DEC':'12'}
+            return f"{m.group(3)}-{months.get(m.group(2).upper(), '01')}"
+        # "3/25/2026 12:00:00 AM" or "10/11/2025" format
+        m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})', v)
+        if m:
+            return f"{m.group(3)}-{int(m.group(1)):02d}"
+        return ""
+    
+    # Date fields to extract admission dates from — DS8 uses DOA, others use DATE_OF_ADMISSION or INWARD_DATE
     date_fields = ["DATE_OF_ADMISSION", "Date_of_admission", "Date of admission",
                    "CLAIM_INTIMATION_DATE", "DATE_OF_NOTIFICATION", "FromDate",
-                   "ClaimDate", "Claim_Date"]
+                   "ClaimDate", "Claim_Date", "DOA", "DOD", "INWARD_DATE"]
     for c in claims_data:
         claim_date = ""
         for df in date_fields:
             v = str(c.get(df, "") or "").strip()
             if v and len(v) >= 7:
-                claim_date = v[:7]  # "2025-05" format
+                claim_date = parse_date_to_yyyy_mm(v)
                 break
         for q_name, (start, end) in quarters_map.items():
             if start <= claim_date <= end:
@@ -3984,39 +4076,42 @@ async def get_claim_trends(case_id: str, request: Request):
     claim_frequency_trend = []
     total_claimed_trend = []
     
+    # Current metrics from real data (must be computed BEFORE the loop since it's used in fallback)
+    current_freq = round((len([c for c in claims_data if get_claim_amount(c) > 0]) / max(total_enrolled, 1)) * 100, 1)
+    
     # Derive baseline from current real data
     # Compute historical quarters proportionally from the date distribution
     max_claimed = max(q_claimed.values()) if max(q_claimed.values()) > 0 else total_claimed * 0.25
     
     for i, q in enumerate(quarters):
         lr = 65.0
+        # Compute LR for real quarters (not the current/latest quarter):
+        # Prefer approved, fallback to claimed amount with 80% approval rate assumption
         if i < len(quarters) - 1 and q_approved[q] > 0:
-            # Real quarter: compute from actual approved/premium ratio
-            q_lr = round((q_approved[q] / max(estimated_premium, 1)) * 100, 1)
-            if q_lr > 0:
-                lr = q_lr
+            lr = round((q_approved[q] / max(estimated_premium, 1)) * 100, 1)
+        elif i < len(quarters) - 1 and q_claimed[q] > 0:
+            # Fallback: use INCURREDAMOUNT as proxy for approved when no Amount_Approved
+            lr = round((q_claimed[q] / max(estimated_premium * 0.8, 1)) * 100, 1)  # ~80% approval assumed
+        lr = max(1.0, min(lr, 150.0))  # Clamp to realistic range 1-150%
         
         freq = 0.0
-        if total_enrolled > 0:
+        if q_count[q] > 0 and total_enrolled > 0:
             freq = round((q_count[q] / total_enrolled) * 100, 1)
         
         # For future/current quarters (no real data), extrapolate from current trend
         if q_claimed[q] == 0 and total_claimed > 0:
             # Extrapolate: Q1 FY25-26 has partial data, others historical
-            frac = [0.22, 0.23, 0.20, 0.15, 0.20][i]  # approximate seasonal distribution
+            frac = [0.22, 0.23, 0.20, 0.15, 0.20, 0.23, 0.20, 0.15][i]  # approximate seasonal distribution
             val = round(total_claimed * frac, 0)
         else:
             val = round(q_claimed[q], 0)
         
         loss_ratio_trend.append({"quarter": q, "loss_ratio": lr, "benchmark": 65})
         claim_frequency_trend.append({
-            "quarter": q, "frequency": freq if freq > 0 else round((total_claimed / max(total_enrolled, 1)) * 0.1, 1),
+            "quarter": q, "frequency": freq if freq > 0 else current_freq,
             "members": total_enrolled
         })
         total_claimed_trend.append({"quarter": q, "value": val})
-    
-    # Current metrics from real data
-    current_freq = round((len([c for c in claims_data if get_claim_amount(c) > 0]) / max(total_enrolled, 1)) * 100, 1)
     
     return {
         "success": True,
@@ -4868,25 +4963,27 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict,
     chronic_members_count = len(chronic_members)
     chronic_members_pct = round(chronic_members_count / max(total_enrolled, 1) * 100, 1)
     
-    # Gender distribution — from structured_data AND claims_data fallback
-    gender_dist = {"Male": 0, "Female": 0, "Other": 0}
-    for r in structured_data:
-        g = str(r.get("Gender", "")).strip()
-        if g.lower() in ["male", "m"]: gender_dist["Male"] += 1
-        elif g.lower() in ["female", "f"]: gender_dist["Female"] += 1
-        else: gender_dist["Other"] += 1
-    
-    # If no gender from structured_data, use claims_data GENDER
-    if gender_dist["Male"] == 0 and gender_dist["Female"] == 0 and claims_data:
+    # ── Gender distribution: ONLY from claims_data GENDER field ──
+    # Enrollment (structured_data) often lacks gender field entirely.
+    # claims_data has GENDER field with M/F values — use this exclusively.
+    gender_from_claims = {"Male": 0, "Female": 0, "Other": 0}
+    if claims_data:
         for c in claims_data:
             g = str(c.get("GENDER") or "").strip()
-            if g == "M": gender_dist["Male"] += 1
-            elif g == "F": gender_dist["Female"] += 1
+            if g.upper() == "M" or g.lower() == "male": gender_from_claims["Male"] += 1
+            elif g.upper() == "F" or g.lower() == "female": gender_from_claims["Female"] += 1
+            else: gender_from_claims["Other"] += 1
     
-    gender_distribution = {k: round(v / max(total_enrolled, 1) * 100, 1) for k, v in gender_dist.items()}
-    # If percentages are all 0 (because gender_dist has raw counts not scaled), use raw counts
-    if gender_distribution["Male"] == 0 and gender_distribution["Female"] == 0:
-        gender_distribution = {"Male": gender_dist["Male"], "Female": gender_dist["Female"], "Other": gender_dist["Other"]}
+    # Compute gender distribution as % of claims (not enrolled — claims are what have gender data)
+    total_with_gender = gender_from_claims["Male"] + gender_from_claims["Female"] + gender_from_claims["Other"]
+    if total_with_gender > 0:
+        gender_distribution = {
+            "Male": round(gender_from_claims["Male"] / total_with_gender * 100, 1),
+            "Female": round(gender_from_claims["Female"] / total_with_gender * 100, 1),
+            "Other": round(gender_from_claims["Other"] / total_with_gender * 100, 1)
+        }
+    else:
+        gender_distribution = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
     
     # Claim concentration (top 3 members as % of total)
     member_claim_totals = sorted(
@@ -5494,40 +5591,68 @@ async def get_claim_breakdown(case_id: str, request: Request):
         if emp_id and name:
             emp_id_to_name[emp_id] = name
     
-    # Diagnosis field names (try all variants — different insurers use different columns)
-    diag_fields = ["AILMENT", "DISEASE OR AILMENT", "DIAGNOSIS", "Diagnosis",
-                   "AILMENT_ICD", "CLAIM_TYPE", "CLAIM_TYPE_1", "CATEGORY",
-                   "Nature_of_illness", "Nature_of_Illness"]
+    # Diagnosis field names (try ALL variants — different insurers use different columns)
+    # Priority order: most specific first, so we get the best match
+    diag_fields = [
+        # Most specific diagnosis fields
+        "Pdig", "pdig",                    # RAG01 / Oriental Insurance
+        "DiseaseCategory", "disease_category",  # RAG01
+        "FINAL_DIAGNOSIS", "Final_Diagnosis",  # Care Health Insurance
+        "DISEASE_NAME_LEVEL_III", "DISEASE_NAME_LEVEL_II",  # Care Health / ITGI
+        "ICD_CODE_LEVEL_3_DESCRIPTION", "ICD_CODE_LEVEL_2_DESCRIPTION", "ICD_CODE_LEVEL_1_DESCRIPTION",  # ITGI
+        "Diagnosis", "DIAGNOSIS", "diagnosis",  # Generic
+        "AILMENT", "DISEASE OR AILMENT", "Ailment", "ailment",  # Various insurers
+        "AILMENT_ICD", "ICD", "icd",         # ICD codes
+        "Sec_Treat", "Sec_Treatment",       # Secondary treatment
+        "TreatmentType", "treatment_type",   # Surgical / Medical / Day care
+        "CLAIM_TYPE", "Claim Type", "CLAIM_TYPE_1",  # Claim type
+        "CATEGORY", "Category", "Nature_of_illness", "Nature_of_Illness",
+        "grp_diagnosis", "grp_diagnosis_icd10",  # Grouped diagnosis
+    ]
     
-    chronic_kws  = {"diabetes", "hypertension", "asthma", "copd", "arthritis",
-                    "heart", "hypertensive", "diabetic", "hyperthyroid", "hypothyroid",
-                    "cholesterol", "chronic", "pcod", "thyroid", "obesity", "morbid",
-                    "renal", "kidney"}
+    chronic_kws  = {"diabetes", "hypertension", "bp", "high blood pressure", "htn",
+                    "asthma", "copd", "arthritis", "heart", "hypertensive", "diabetic",
+                    "hyperthyroid", "hypothyroid", "cholesterol", "chronic", "pcod",
+                    "thyroid", "obesity", "morbid", "renal", "kidney", "gbs",
+                    "guillain-barr", "syndrom"}
     cardio_kws   = {"cardiac", "heart", "myocardial", "infarction", "angina",
                     "valve", "aortic", "coronary", "tachycardia", "arrhythmia",
-                    "heart failure"}
+                    "heart failure", "chest pain", "cardio"}
     gastro_kws   = {"gastro", "colon", "intestinal", "liver", "hepatitis", "pancreas",
-                    "ulcer", "appendicitis", "bowel", "diarrhea", "dysentery", "jaundice"}
+                    "ulcer", "appendicitis", "bowel", "diarrhea", "dysentery", "jaundice",
+                    "abdomen", "gastritis", "food intolerance", "feeding intolerance",
+                    "vomiting", "nausea"}
     accident_kws = {"accident", "fracture", "trauma", "injury", "fractures", "wound",
-                    "fall", "rta", "road"}
+                    "fall", "rta", "road", "burn", "sprain", "dislocation", "contusion"}
     surgery_kws  = {"surgery", "surgical", "laparoscopy", "bypass", "stent",
                     "transplant", "angiography", "angioplasty", "cabg", "hysterectomy",
                     "appendectomy", "cholecystectomy", "arthroplasty", "prostatectomy",
-                    "mastectomy", "lobectomy"}
+                    "mastectomy", "lobectomy", "discectomy", "laminectomy", "arthroscopy",
+                    "operative", "operation", "excision", "biopsy"}
     maternity_kws= {"delivery", "childbirth", "pregnancy", "maternity", "cesarean",
                     "lscs", "normal delivery", "c section", "obstetric", "gravida",
-                    "multigravida", "pcos", "miscarriage", "abortion"}
+                    "multigravida", "pcos", "miscarriage", "abortion", " primi",
+                    "primi for", "primigravida", "g1 -", "antepartum", "postpartum",
+                    "miscarriage", "ectopic"}
     preventive_kws={"checkup", "screening", "vaccination", "immunization", "annual",
-                    "preventive", "master health", "health check"}
+                    "preventive", "master health", "health check", "wellness"}
     cancer_kws   = {"cancer", "carcinoma", "tumor", "malignant", "oncology",
                     "chemotherapy", "radiation", "leukemia", "lymphoma", "melanoma",
-                    "sarcoma", "blastoma"}
+                    "sarcoma", "blastoma", "neoplasm"}
     neuro_kws    = {"stroke", "brain", "neural", "spine", "spinal", "meningitis",
-                    "encephalitis", "paralysis", "epilepsy", "seizure", "parkinson"}
+                    "encephalitis", "paralysis", "epilepsy", "seizure", "parkinson",
+                    "cervical disc", "disc disorder", "radiculopathy", "neuropathy",
+                    "migraine", "headache", "cns"}
     ortho_kws    = {"bone", "joint", "orthopedic", "ortho", "knee", "hip", "ligament",
-                    "meniscus", "arthroscopy"}
+                    "meniscus", "arthroscopy", "fractures", "musculoskeletal",
+                    "connective tissue", "sprain", "strain", "back pain", "neck pain",
+                    "osteoarthritis", "arthritis", "osteoporosis"}
     eye_ent_kws  = {"cataract", "retina", "glaucoma", "lasik", "vision", "ear",
-                    "nose", "throat", "sinus", "tonsil", "ophthalmology", " ENT"}
+                    "nose", "throat", "sinus", "tonsil", "ophthalmology", " ENT",
+                    "dental", "oral", "hearing"}
+    infectious_kws = {"pyrexia", "sepsis", "fever", "infection", "infectious", "malaria",
+                      "dengue", "typhoid", "viral", "bacterial", "pneumonia", "tb",
+                      "tuberculosis", "hiv", "hepatitis"}
     
     cat_order = [
         ("Cancer & Critical Illness", cancer_kws),
@@ -5538,18 +5663,20 @@ async def get_claim_breakdown(case_id: str, request: Request):
         ("Surgery",                  surgery_kws),
         ("Orthopedic",               ortho_kws),
         ("Eye & ENT",                eye_ent_kws),
+        ("Infectious Diseases",      infectious_kws),
         ("Accidents & Trauma",        accident_kws),
         ("Chronic Conditions",        chronic_kws),
         ("Preventive Care",          preventive_kws),
     ]
     
     categories = {cat: {"count": 0, "claimed": 0, "approved": 0, "members": set()}
-                  for cat in [c[0] for c in cat_order] + ["Other"]}
+                  for cat in [c[0] for c in cat_order] + ["Other", "Infectious Diseases"]}
     colors = {
         "Cancer & Critical Illness": "#7c3aed", "Cardiovascular": "#dc2626",
         "Gastrointestinal": "#f97316", "Neurological": "#8b5cf6",
         "Maternity & Childbirth": "#ec4899", "Surgery": "#eab308",
         "Orthopedic": "#06b6d4", "Eye & ENT": "#14b8a6",
+        "Infectious Diseases": "#f97316",
         "Accidents & Trauma": "#f59e0b", "Chronic Conditions": "#ef4444",
         "Preventive Care": "#22c55e", "Other": "#64748b"
     }
@@ -5671,28 +5798,53 @@ async def get_claim_trends(case_id: str, request: Request):
     current_lr = round((total_approved / max(estimated_premium, 1)) * 100, 1) if estimated_premium else 0
     
     # Real loss ratio trend: use DATE_OF_ADMISSION to bucket claims into quarters
+    # FY24-25: Apr 2024 - Mar 2025 | FY25-26: Apr 2025 - Mar 2026
     quarters_map = {
         "Q1 FY24-25": ("2024-04", "2024-06"),
         "Q2 FY24-25": ("2024-07", "2024-09"),
         "Q3 FY24-25": ("2024-10", "2024-12"),
         "Q4 FY24-25": ("2025-01", "2025-03"),
         "Q1 FY25-26": ("2025-04", "2025-06"),
+        "Q2 FY25-26": ("2025-07", "2025-09"),
+        "Q3 FY25-26": ("2025-10", "2025-12"),
+        "Q4 FY25-26": ("2026-01", "2026-03"),
     }
     
-    quarters = ["Q1 FY24-25", "Q2 FY24-25", "Q3 FY24-25", "Q4 FY24-25", "Q1 FY25-26"]
+    quarters = ["Q1 FY24-25", "Q2 FY24-25", "Q3 FY24-25", "Q4 FY24-25", "Q1 FY25-26", "Q2 FY25-26", "Q3 FY25-26", "Q4 FY25-26"]
     q_claimed = {q: 0.0 for q in quarters}
     q_approved = {q: 0.0 for q in quarters}
     q_count = {q: 0 for q in quarters}
     
+    # ── Parse date to YYYY-MM format (handles multiple input formats) ──
+    def parse_date_to_yyyy_mm(v: str) -> str:
+        """Convert various date formats to YYYY-MM for quarter bucketing."""
+        import re
+        v = str(v).strip()
+        # Already "2025-05-13T00:00:00" or "2025-05-13" → take first 7
+        if re.match(r'^\d{4}-\d{2}', v):
+            return v[:7]
+        # "26-MAR-2026" or "06-APR-2026" format
+        m = re.match(r'^(\d{1,2})-([A-Z]{3})-(\d{4})$', v, re.IGNORECASE)
+        if m:
+            months = {'JAN':'01','FEB':'02','MAR':'03','APR':'04','MAY':'05','JUN':'06',
+                      'JUL':'07','AUG':'08','SEP':'09','OCT':'10','NOV':'11','DEC':'12'}
+            return f"{m.group(3)}-{months.get(m.group(2).upper(), '01')}"
+        # "3/25/2026 12:00:00 AM" or "10/11/2025" format
+        m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})', v)
+        if m:
+            return f"{m.group(3)}-{int(m.group(1)):02d}"
+        return ""
+    
+    # Date fields to extract admission dates from — DS8 uses DOA, others use DATE_OF_ADMISSION or INWARD_DATE
     date_fields = ["DATE_OF_ADMISSION", "Date_of_admission", "Date of admission",
                    "CLAIM_INTIMATION_DATE", "DATE_OF_NOTIFICATION", "FromDate",
-                   "ClaimDate", "Claim_Date"]
+                   "ClaimDate", "Claim_Date", "DOA", "DOD", "INWARD_DATE"]
     for c in claims_data:
         claim_date = ""
         for df in date_fields:
             v = str(c.get(df, "") or "").strip()
             if v and len(v) >= 7:
-                claim_date = v[:7]  # "2025-05" format
+                claim_date = parse_date_to_yyyy_mm(v)
                 break
         for q_name, (start, end) in quarters_map.items():
             if start <= claim_date <= end:
@@ -5709,39 +5861,42 @@ async def get_claim_trends(case_id: str, request: Request):
     claim_frequency_trend = []
     total_claimed_trend = []
     
+    # Current metrics from real data (must be computed BEFORE the loop since it's used in fallback)
+    current_freq = round((len([c for c in claims_data if get_claim_amount(c) > 0]) / max(total_enrolled, 1)) * 100, 1)
+    
     # Derive baseline from current real data
     # Compute historical quarters proportionally from the date distribution
     max_claimed = max(q_claimed.values()) if max(q_claimed.values()) > 0 else total_claimed * 0.25
     
     for i, q in enumerate(quarters):
         lr = 65.0
+        # Compute LR for real quarters (not the current/latest quarter):
+        # Prefer approved, fallback to claimed amount with 80% approval rate assumption
         if i < len(quarters) - 1 and q_approved[q] > 0:
-            # Real quarter: compute from actual approved/premium ratio
-            q_lr = round((q_approved[q] / max(estimated_premium, 1)) * 100, 1)
-            if q_lr > 0:
-                lr = q_lr
+            lr = round((q_approved[q] / max(estimated_premium, 1)) * 100, 1)
+        elif i < len(quarters) - 1 and q_claimed[q] > 0:
+            # Fallback: use INCURREDAMOUNT as proxy for approved when no Amount_Approved
+            lr = round((q_claimed[q] / max(estimated_premium * 0.8, 1)) * 100, 1)  # ~80% approval assumed
+        lr = max(1.0, min(lr, 150.0))  # Clamp to realistic range 1-150%
         
         freq = 0.0
-        if total_enrolled > 0:
+        if q_count[q] > 0 and total_enrolled > 0:
             freq = round((q_count[q] / total_enrolled) * 100, 1)
         
         # For future/current quarters (no real data), extrapolate from current trend
         if q_claimed[q] == 0 and total_claimed > 0:
             # Extrapolate: Q1 FY25-26 has partial data, others historical
-            frac = [0.22, 0.23, 0.20, 0.15, 0.20][i]  # approximate seasonal distribution
+            frac = [0.22, 0.23, 0.20, 0.15, 0.20, 0.23, 0.20, 0.15][i]  # approximate seasonal distribution
             val = round(total_claimed * frac, 0)
         else:
             val = round(q_claimed[q], 0)
         
         loss_ratio_trend.append({"quarter": q, "loss_ratio": lr, "benchmark": 65})
         claim_frequency_trend.append({
-            "quarter": q, "frequency": freq if freq > 0 else round((total_claimed / max(total_enrolled, 1)) * 0.1, 1),
+            "quarter": q, "frequency": freq if freq > 0 else current_freq,
             "members": total_enrolled
         })
         total_claimed_trend.append({"quarter": q, "value": val})
-    
-    # Current metrics from real data
-    current_freq = round((len([c for c in claims_data if get_claim_amount(c) > 0]) / max(total_enrolled, 1)) * 100, 1)
     
     return {
         "success": True,
