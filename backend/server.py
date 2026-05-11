@@ -2305,22 +2305,31 @@ Generate the merged data and AI insights.respond with JSON only."""
     # This ensures analytics always work even when enrollment matching fails
     from collections import Counter
     
-    # Gender: normalize M/F/Male/Female to proper percentages from claims_data GENDER field
+    # Gender: check structured_data first (enrollment), then claims_data GENDER field
     gender_map = {"Male": 0, "Female": 0, "Other": 0}
-    for c in claims_data:
-        g = str(c.get("GENDER") or "").strip()
-        # Normalize: M/m → Male, F/f → Female, Male/Female/male/female → title case, Other/empty → Other
-        if g.upper() == "M" or g.lower() == "male": gender_map["Male"] += 1
-        elif g.upper() == "F" or g.lower() == "female": gender_map["Female"] += 1
-        else: gender_map["Other"] += 1
     
-    # Compute gender distribution as % of claims (not enrolled — claims are what have gender data)
-    total_claims_with_gender = gender_map["Male"] + gender_map["Female"] + gender_map["Other"]
-    if total_claims_with_gender > 0:
+    # First: try structured_data (enrollment records with Gender field)
+    for r in structured_data:
+        g = str(r.get("Gender") or "").strip()
+        if g.lower() in ["male", "m"]: gender_map["Male"] += 1
+        elif g.lower() in ["female", "f"]: gender_map["Female"] += 1
+        elif g: gender_map["Other"] += 1
+    
+    # Second: if structured_data has no gender, try claims_data GENDER field
+    if gender_map["Male"] == 0 and gender_map["Female"] == 0 and claims_data:
+        for c in claims_data:
+            g = str(c.get("GENDER") or "").strip()
+            if g.upper() == "M" or g.lower() == "male": gender_map["Male"] += 1
+            elif g.upper() == "F" or g.lower() == "female": gender_map["Female"] += 1
+            else: gender_map["Other"] += 1
+    
+    # Compute gender distribution as % of total (enrolled or claims with gender)
+    total_with_gender = gender_map["Male"] + gender_map["Female"] + gender_map["Other"]
+    if total_with_gender > 0:
         gender_distribution_pct = {
-            "Male": round(gender_map["Male"] / total_claims_with_gender * 100, 1),
-            "Female": round(gender_map["Female"] / total_claims_with_gender * 100, 1),
-            "Other": round(gender_map["Other"] / total_claims_with_gender * 100, 1)
+            "Male": round(gender_map["Male"] / total_with_gender * 100, 1),
+            "Female": round(gender_map["Female"] / total_with_gender * 100, 1),
+            "Other": round(gender_map["Other"] / total_with_gender * 100, 1)
         }
     else:
         gender_distribution_pct = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
@@ -2334,13 +2343,8 @@ Generate the merged data and AI insights.respond with JSON only."""
         elif a <= 55: claim_age_bands["46-55"] += 1
         else: claim_age_bands["55+"] += 1
     
-    # Always compute gender from claims_data — enrollment often lacks gender field
-    # Use % of claims with gender, fallback to 60/40 estimate if no claims data
-    if total_claims_with_gender > 0:
-        analytics["demographics"]["gender_distribution"] = gender_distribution_pct
-    elif analytics["demographics"]["gender_distribution"].get("Male", 0) == 0 and analytics["demographics"]["gender_distribution"].get("Female", 0) == 0:
-        # No gender data available — use reasonable default
-        analytics["demographics"]["gender_distribution"] = {"Male": 60.0, "Female": 40.0, "Other": 0.0}
+    # Always use the computed gender_distribution_pct (from structured_data first, then claims_data)
+    analytics["demographics"]["gender_distribution"] = gender_distribution_pct
     
     # Claim type breakdown from AILMENT field
     ailment_counter = Counter()
@@ -3178,24 +3182,37 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict,
     chronic_members_count = len(chronic_members)
     chronic_members_pct = round(chronic_members_count / max(total_enrolled, 1) * 100, 1)
     
-    # ── Gender distribution: ONLY from claims_data GENDER field ──
-    # Enrollment (structured_data) often lacks gender field entirely.
-    # claims_data has GENDER field with M/F values — use this exclusively.
-    gender_from_claims = {"Male": 0, "Female": 0, "Other": 0}
-    if claims_data:
+    # ── Gender distribution: Priority order ──
+    # 1. structured_data (enrollment records with Gender field) — most reliable
+    # 2. claims_data GENDER field (M/F codes) — secondary source
+    # 3. raw_data Gender/gender — tertiary fallback
+    gender_dist = {"Male": 0, "Female": 0, "Other": 0}
+    
+    # First: try structured_data (built from enrollment, has Gender field)
+    for r in structured_data:
+        g = str(r.get("Gender") or "").strip()
+        if g.lower() in ["male", "m"]: gender_dist["Male"] += 1
+        elif g.lower() in ["female", "f"]: gender_dist["Female"] += 1
+        elif g: gender_dist["Other"] += 1
+    
+    # Second: if structured_data has no gender, try claims_data GENDER field
+    if gender_dist["Male"] == 0 and gender_dist["Female"] == 0 and claims_data:
+        gender_from_claims = {"Male": 0, "Female": 0, "Other": 0}
         for c in claims_data:
             g = str(c.get("GENDER") or "").strip()
             if g.upper() == "M" or g.lower() == "male": gender_from_claims["Male"] += 1
             elif g.upper() == "F" or g.lower() == "female": gender_from_claims["Female"] += 1
             else: gender_from_claims["Other"] += 1
+        if gender_from_claims["Male"] + gender_from_claims["Female"] > 0:
+            gender_dist = gender_from_claims
     
-    # Compute gender distribution as % of claims (not enrolled — claims are what have gender data)
-    total_with_gender = gender_from_claims["Male"] + gender_from_claims["Female"] + gender_from_claims["Other"]
+    # Compute gender distribution as % of total (enrolled or claims with gender)
+    total_with_gender = gender_dist["Male"] + gender_dist["Female"] + gender_dist["Other"]
     if total_with_gender > 0:
         gender_distribution = {
-            "Male": round(gender_from_claims["Male"] / total_with_gender * 100, 1),
-            "Female": round(gender_from_claims["Female"] / total_with_gender * 100, 1),
-            "Other": round(gender_from_claims["Other"] / total_with_gender * 100, 1)
+            "Male": round(gender_dist["Male"] / total_with_gender * 100, 1),
+            "Female": round(gender_dist["Female"] / total_with_gender * 100, 1),
+            "Other": round(gender_dist["Other"] / total_with_gender * 100, 1)
         }
     else:
         gender_distribution = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
@@ -4963,24 +4980,37 @@ def calculate_underwriting_metrics(structured_data: List[Dict], key_stats: Dict,
     chronic_members_count = len(chronic_members)
     chronic_members_pct = round(chronic_members_count / max(total_enrolled, 1) * 100, 1)
     
-    # ── Gender distribution: ONLY from claims_data GENDER field ──
-    # Enrollment (structured_data) often lacks gender field entirely.
-    # claims_data has GENDER field with M/F values — use this exclusively.
-    gender_from_claims = {"Male": 0, "Female": 0, "Other": 0}
-    if claims_data:
+    # ── Gender distribution: Priority order ──
+    # 1. structured_data (enrollment records with Gender field) — most reliable
+    # 2. claims_data GENDER field (M/F codes) — secondary source
+    # 3. raw_data Gender/gender — tertiary fallback
+    gender_dist = {"Male": 0, "Female": 0, "Other": 0}
+    
+    # First: try structured_data (built from enrollment, has Gender field)
+    for r in structured_data:
+        g = str(r.get("Gender") or "").strip()
+        if g.lower() in ["male", "m"]: gender_dist["Male"] += 1
+        elif g.lower() in ["female", "f"]: gender_dist["Female"] += 1
+        elif g: gender_dist["Other"] += 1
+    
+    # Second: if structured_data has no gender, try claims_data GENDER field
+    if gender_dist["Male"] == 0 and gender_dist["Female"] == 0 and claims_data:
+        gender_from_claims = {"Male": 0, "Female": 0, "Other": 0}
         for c in claims_data:
             g = str(c.get("GENDER") or "").strip()
             if g.upper() == "M" or g.lower() == "male": gender_from_claims["Male"] += 1
             elif g.upper() == "F" or g.lower() == "female": gender_from_claims["Female"] += 1
             else: gender_from_claims["Other"] += 1
+        if gender_from_claims["Male"] + gender_from_claims["Female"] > 0:
+            gender_dist = gender_from_claims
     
-    # Compute gender distribution as % of claims (not enrolled — claims are what have gender data)
-    total_with_gender = gender_from_claims["Male"] + gender_from_claims["Female"] + gender_from_claims["Other"]
+    # Compute gender distribution as % of total (enrolled or claims with gender)
+    total_with_gender = gender_dist["Male"] + gender_dist["Female"] + gender_dist["Other"]
     if total_with_gender > 0:
         gender_distribution = {
-            "Male": round(gender_from_claims["Male"] / total_with_gender * 100, 1),
-            "Female": round(gender_from_claims["Female"] / total_with_gender * 100, 1),
-            "Other": round(gender_from_claims["Other"] / total_with_gender * 100, 1)
+            "Male": round(gender_dist["Male"] / total_with_gender * 100, 1),
+            "Female": round(gender_dist["Female"] / total_with_gender * 100, 1),
+            "Other": round(gender_dist["Other"] / total_with_gender * 100, 1)
         }
     else:
         gender_distribution = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
