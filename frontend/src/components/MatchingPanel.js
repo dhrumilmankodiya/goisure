@@ -21,22 +21,45 @@ const MatchingPanel = ({ caseId, enrollmentUploaded, claimsUploaded, onMatchComp
     setResults(null);
     setElapsedSeconds(0);
     
-    // S25/S26 FIX: Add timeout timer (3 minutes = 180 seconds)
+    // S25/S26/S45 FIX: Add timeout timer + ai-status polling (3 minutes = 180 seconds)
     const startTime = Date.now();
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       setElapsedSeconds(elapsed);
-      if (elapsed >= 180) {
-        clearInterval(timerRef.current);
-      }
+      if (elapsed >= 180) clearInterval(timerRef.current);
     }, 1000);
+
+    // S45 FIX: Poll ai-status every 5 seconds while structuring
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/cases/${caseId}/ai-status`);
+        const status = await res.json();
+        if (status.status === 'failed') {
+          clearInterval(pollInterval);
+          clearInterval(timerRef.current);
+          setLoading(false);
+          setStructuring(false);
+          setError(status.error || 'AI processing failed. Please try again.');
+        } else if (status.status === 'complete') {
+          clearInterval(pollInterval);
+          clearInterval(timerRef.current);
+          setLoading(false);
+          setStructuring(false);
+          getMatchResults(); // fetch results now that processing is done
+          return;
+        }
+      } catch (_) {}
+    }, 5000);
+    timerRef.current = pollInterval; // reuse for cleanup
     
     try {
       const response = await matchingApi.runMatch(caseId);
+      clearInterval(pollInterval);
       clearInterval(timerRef.current);
       setResults(response.data);
       if (onMatchComplete) onMatchComplete(response.data);
     } catch (err) {
+      clearInterval(pollInterval);
       clearInterval(timerRef.current);
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       if (elapsed >= 180) {

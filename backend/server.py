@@ -1721,6 +1721,34 @@ async def export_matched_data(case_id: str, request: Request):
         headers={"Content-Disposition": f"attachment; filename=matched_data_{case_id}.xlsx"}
     )
 
+@api_router.get("/cases/{case_id}/ai-status")
+async def get_ai_status(case_id: str, request: Request = None):
+    """S45 FIX: Poll AI job status — returns current status + elapsed time + error"""
+    user = await get_current_user(request)
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    status = case.get("ai_job_status", "unknown")
+    started = case.get("ai_job_started")
+    error = case.get("ai_job_error")
+    completed = case.get("ai_job_completed")
+    
+    elapsed_seconds = 0
+    if started and status == "processing":
+        import datetime
+        started_dt = datetime.datetime.fromisoformat(started.replace("Z", "+00:00"))
+        elapsed_seconds = (datetime.datetime.now(timezone.utc) - started_dt).seconds
+    
+    return {
+        "status": status,
+        "elapsed_seconds": elapsed_seconds,
+        "started": started,
+        "completed": completed,
+        "error": error,
+        "case_status": case.get("status", "unknown")
+    }
+
 @api_router.get("/cases/{case_id}/analytics")
 async def get_analytics(case_id: str, request: Request = None):
     """Get AI matching analytics"""
@@ -1803,808 +1831,836 @@ async def process_ai(case_id: str, request: Request = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"User validation failed: {e}")
     
-    enrollment_data = case.get("mapped_data") or case.get("raw_data") or case.get("enrollment_data", [])
-    claims_data = case.get("claims_data", [])
-    
-    if not enrollment_data:
-        raise HTTPException(status_code=400, detail="No enrollment data found")
-    
-    if not claims_data:
-        raise HTTPException(status_code=400, detail="No claims data found")
-    
-    # Sample data for AI processing (limit to avoid token limits)
-    enrollment_sample = enrollment_data[:50]
-    claims_sample = claims_data[:100]
-    
-    # Try AI-powered processing with Gemma 4
-    ai_insights = []
-    structured_data = []
-    
-    # Calculate basic stats (needed for both AI and fallback paths)
-    total_enrolled = len(enrollment_data)
-    total_claims = len(claims_data)
-    total_claimed = sum(get_claim_amount(c) for c in claims_data)
-    
-    api_key = os.environ.get("OLLAMA_CLOUD_API_KEY", "")
-    # Also try reading from file if env var not set (Ollama Cloud)
-    if not api_key:
-        try:
-            with open("/tmp/ollama_cloud_key.txt", "r") as f:
-                api_key = f.read().strip()
-        except:
-            pass
-
-    if api_key:
-        # Only dump JSON if we have a key
-        enrollment_json = json.dumps(enrollment_sample, default=str)
-        claims_json = json.dumps(claims_sample, default=str)
-        try:
-            async with aiohttp.ClientSession() as session:
-                # Build prompt for Gemma 4
-                system_prompt = """You are an expert insurance data analyst. Your task is to:
-1. Merge enrollment and claims data at the user/member level
-2. Generate actionable AI insights for underwriters
-3. Identify patterns, risks, and anomalies in the data
-
-Analyze the provided enrollment and claims data and respond with a JSON object containing:
-- "insights": Array of insight objects with "type" (risk/opportunity/pattern), "title", "description", "severity" (high/medium/low)
-- "structured_data": Array of merged records at member level with fields: employee_id, name, gender, age, department, sum_insured, claims_count, total_claims, claims_breakdown, risk_flags
-- "summary": Object with key metrics
-
-Respond ONLY with valid JSON, no other text."""
-
-                user_prompt = f"""Enrollment data (first 50 records):
-{enrollment_json}
-
-Claims data (first 100 records):
-{claims_json}
-
-Total enrollment count: {total_enrolled}
-Total claims count: {total_claims}
-Total claimed amount: ₹{total_claimed:,.2f}
-
-Generate the merged data and AI insights.respond with JSON only."""
-
-                async with session.post(
-                    "https://ollama.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "gemma3:27b",
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 8000
-                    },
-                    timeout=aiohttp.ClientTimeout(total=180)
-                ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        logger.info(f"Ollama response received: {len(content)} chars")
-                        
-                        # Try to parse JSON from response
-                        try:
-                            json_start = content.find('{')
-                            json_end = content.rfind('}') + 1
-                            if json_start >= 0 and json_end > json_start:
-                                ai_result = json.loads(content[json_start:json_end])
-                                ai_insights = ai_result.get("insights", [])
-                                structured_data = ai_result.get("structured_data", [])
-                                logger.info(f"AI parsed: {len(ai_insights)} insights, {len(structured_data)} members")
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse AI JSON response: {e}, content preview: {content[:200]}")
-                    else:
-                        body = await resp.text()
-                        logger.warning(f"Ollama Cloud Gemma 4 API returned status {resp.status}: {body[:500]}")
-        except Exception as e:
-            logger.warning(f"AI processing failed: {e}")
-    
-    # Fallback: Basic merging if AI didn't work
-    # Fall back to Python matching if Gemma produced no usable data (no non-empty Employee_IDs)
-    has_valid_ids = any(
-        str(r.get("Employee_ID") or "").strip() 
-        for r in structured_data
-    )
-    # If we already have valid match_results, use them instead of expensive fallback
-    if (not structured_data or not has_valid_ids) and case.get("match_results"):
-        import difflib
-        # Build structured_data from existing match_results
+    # S45 FIX: Outer job error handler — catches ALL exceptions and marks job as failed
+    try:
+        enrollment_data = case.get("mapped_data") or case.get("raw_data") or case.get("enrollment_data", [])
+        claims_data = case.get("claims_data", [])
+        
+        if not enrollment_data:
+            raise HTTPException(status_code=400, detail="No enrollment data found")
+        
+        if not claims_data:
+            raise HTTPException(status_code=400, detail="No claims data found")
+        
+        # S45 FIX: Track job status for polling
+        import datetime
+        job_started = datetime.datetime.now(timezone.utc).isoformat()
+        await db.cases.update_one({"case_id": case_id}, {"$set": {
+            "ai_job_status": "processing",
+            "ai_job_started": job_started,
+            "ai_job_error": None,
+            "status": "ai_processing"
+        }})
+        
+        # Sample data for AI processing (limit to avoid token limits)
+        enrollment_sample = enrollment_data[:50]
+        claims_sample = claims_data[:100]
+        
+        # Try AI-powered processing with Gemma 4
+        ai_insights = []
         structured_data = []
-        enrollment_by_id = {}
-        for e in enrollment_data:
-            eid = str(e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "").strip()
-            if eid:
-                enrollment_by_id[eid] = e
-            name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
-            if name:
-                enrollment_by_id[name] = e
         
-        member_claims = {}
-        for mr in case.get("match_results", []):
-            matched_id = mr.get("matched_enrollment_id")
-            claim = mr.get("claim_data", {})
-            amount = mr.get("amount", 0) or get_claim_amount(claim)
-            
-            # Create enriched claim
-            enriched = {
-                "claim_id": str(claim.get("ClaimID") or claim.get("CCN") or claim.get("MDID") or claim.get("TAC_Tran_ID") or ""),
-                "match_type": mr.get("match_method", ""),
-                "date_of_admission": str(claim.get("ClaimDate") or claim.get("Date of admission") or claim.get("FromDate") or ""),
-                "date_of_discharge": str(claim.get("DischargeDate") or claim.get("DOD") or claim.get("ToDate") or ""),
-                "hospital_name": str(claim.get("Hospital") or ""),
-                "diagnosis_primary": str(claim.get("Diagnosis") or ""),
-                "claim_amount": amount,
-                "approved_amount": amount,
-                "claim_status": str(claim.get("ClaimStatus") or "Approved" or ""),
-            }
-            
-            if matched_id and str(matched_id) in enrollment_by_id:
-                e = enrollment_by_id[str(matched_id)]
+        # Calculate basic stats (needed for both AI and fallback paths)
+        total_enrolled = len(enrollment_data)
+        total_claims = len(claims_data)
+        total_claimed = sum(get_claim_amount(c) for c in claims_data)
+        
+        api_key = os.environ.get("OLLAMA_CLOUD_API_KEY", "")
+        # Also try reading from file if env var not set (Ollama Cloud)
+        if not api_key:
+            try:
+                with open("/tmp/ollama_cloud_key.txt", "r") as f:
+                    api_key = f.read().strip()
+            except:
+                pass
+    
+        if api_key:
+            # Only dump JSON if we have a key
+            enrollment_json = json.dumps(enrollment_sample, default=str)
+            claims_json = json.dumps(claims_sample, default=str)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    # Build prompt for Gemma 4
+                    system_prompt = """You are an expert insurance data analyst. Your task is to:
+    1. Merge enrollment and claims data at the user/member level
+    2. Generate actionable AI insights for underwriters
+    3. Identify patterns, risks, and anomalies in the data
+    
+    Analyze the provided enrollment and claims data and respond with a JSON object containing:
+    - "insights": Array of insight objects with "type" (risk/opportunity/pattern), "title", "description", "severity" (high/medium/low)
+    - "structured_data": Array of merged records at member level with fields: employee_id, name, gender, age, department, sum_insured, claims_count, total_claims, claims_breakdown, risk_flags
+    - "summary": Object with key metrics
+    
+    Respond ONLY with valid JSON, no other text."""
+    
+                    user_prompt = f"""Enrollment data (first 50 records):
+    {enrollment_json}
+    
+    Claims data (first 100 records):
+    {claims_json}
+    
+    Total enrollment count: {total_enrolled}
+    Total claims count: {total_claims}
+    Total claimed amount: ₹{total_claimed:,.2f}
+    
+    Generate the merged data and AI insights.respond with JSON only."""
+    
+                    async with session.post(
+                        "https://ollama.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "gemma3:27b",
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            "temperature": 0.3,
+                            "max_tokens": 8000
+                        },
+                        timeout=aiohttp.ClientTimeout(total=300)  # S45: Increased from 180s to 300s (5 min)
+                    ) as resp:
+                        if resp.status == 200:
+                            result = await resp.json()
+                            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                            logger.info(f"Ollama response received: {len(content)} chars")
+                            
+                            # Try to parse JSON from response
+                            try:
+                                json_start = content.find('{')
+                                json_end = content.rfind('}') + 1
+                                if json_start >= 0 and json_end > json_start:
+                                    ai_result = json.loads(content[json_start:json_end])
+                                    ai_insights = ai_result.get("insights", [])
+                                    structured_data = ai_result.get("structured_data", [])
+                                    logger.info(f"AI parsed: {len(ai_insights)} insights, {len(structured_data)} members")
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Failed to parse AI JSON response: {e}, content preview: {content[:200]}")
+                        else:
+                            body = await resp.text()
+                            logger.warning(f"Ollama Cloud Gemma 4 API returned status {resp.status}: {body[:500]}")
+            except Exception as e:
+                logger.warning(f"AI processing failed: {e}")
+        
+        # Fallback: Basic merging if AI didn't work
+        # Fall back to Python matching if Gemma produced no usable data (no non-empty Employee_IDs)
+        has_valid_ids = any(
+            str(r.get("Employee_ID") or "").strip() 
+            for r in structured_data
+        )
+        # If we already have valid match_results, use them instead of expensive fallback
+        if (not structured_data or not has_valid_ids) and case.get("match_results"):
+            import difflib
+            # Build structured_data from existing match_results
+            structured_data = []
+            enrollment_by_id = {}
+            for e in enrollment_data:
+                eid = str(e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "").strip()
+                if eid:
+                    enrollment_by_id[eid] = e
                 name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
-                eid = str(e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "").strip().upper()
-                key = name or eid
-                if key:
-                    if key not in member_claims:
-                        member_claims[key] = []
-                    member_claims[key].append(enriched)
-        
-        # Build structured data
-        for e in enrollment_data:
-            member_name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
-            emp_code = str(e.get("EmployeeCode") or e.get("EmpCode") or e.get("Employee_ID") or e.get("employee_id") or "").strip().upper()
-            claims_for_member = []
-            if member_name and member_name in member_claims:
-                claims_for_member.extend(member_claims[member_name])
-            if emp_code and emp_code != member_name and emp_code in member_claims:
-                for c in member_claims[emp_code]:
-                    if c not in claims_for_member:
-                        claims_for_member.append(c)
-            
-            claim_count = len(claims_for_member)
-            total_claim_amt = sum(get_claim_amount(c) for c in claims_for_member)
-            total_approved = total_claim_amt
-            
-            first_claim = claims_for_member[0] if claims_for_member else {}
-            diagnosis_1, diagnosis_2 = get_diagnosis_fields(first_claim)
-            hospital_1 = get_hospital(first_claim)
-            claim_status = get_claim_status(first_claim)
-            
-            # Risk flags from claims
-            risk_flags = []
-            high_risk_keywords = ["CANCER", "MALIGNANT", "METASTASIS", "CARCINOMA", "CARDIAC", "MYOCARDIAL", 
-                                 "INFARCTION", "STROKE", "TRANSPLANT", "DIALYSIS", "CHEMO", "HIV", "AIDS"]
-            chronic_keywords = ["DIABETES", "HYPERTENSION", "ASTHMA", "COPD", "ARTHRITIS"]
-            all_diagnoses = []
-            for c in claims_for_member:
-                diag = str(c.get("diagnosis_primary") or c.get("Diagnosis") or "").upper()
-                if diag:
-                    all_diagnoses.append(diag)
-                    for kw in high_risk_keywords:
-                        if kw in diag and kw not in risk_flags:
-                            risk_flags.append("Critical diagnosis: " + kw)
-                    for kw in chronic_keywords:
-                        if kw in diag and "Chronic" not in " ".join(risk_flags):
-                            risk_flags.append("Chronic condition present")
-                            break
-            
-            if claim_count > 5:
-                risk_flags.append("High claim frequency")
-            if total_claim_amt > 500000:
-                risk_flags.append("High claim amount")
-            
-            sum_ins = e.get("SumInsured") or e.get("Sum_Insured") or e.get("sum_insured") or 0
-            member_age = e.get("Age") or 0
-            try:
-                member_age = int(member_age)
-            except:
-                member_age = 0
-            
-            pec = get_pre_existing_conditions(e)
-            chronic = is_chronic(pec)
-            if chronic:
-                risk_flags.append("Pre-existing chronic condition")
-            
-            age_band = get_age_band(member_age)
-            
-            structured_data.append({
-                "Name": e.get("Name") or e.get("MemberName") or "",
-                "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
-                "Age": member_age,
-                "Age_Band": age_band,
-                "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
-                "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
-                "Department": e.get("Department") or e.get("department") or "",
-                "Sum_Insured": sum_ins,
-                "Pre_Existing_Conditions": pec,
-                "Chronic_Condition": chronic,
-                "Claim_Count": claim_count,
-                "Total_Claimed": round(total_claim_amt, 2),
-                "Total_Approved": round(total_approved, 2),
-                "Claim_Status": claim_status,
-                "Diagnosis_1": diagnosis_1,
-                "Diagnosis_2": diagnosis_2,
-                "Hospital_1": hospital_1,
-                "Risk_Flags": risk_flags,
-            })
-    elif not structured_data or not has_valid_ids:
-        # Calculate claims amounts (from approved field) for detailed per-member stats
-        claims_amounts = []
-        for c in claims_data:
-            try:
-                amt = get_claim_amount(c)
-                claims_amounts.append(amt)
-            except:
-                claims_amounts.append(0)
-        total_claimed = sum(claims_amounts)
-
-        # Build lookups for enrollment by Employee_ID/EmployeeCode AND by Name
-        # Build lookups for enrollment by Employee_ID/EmployeeCode AND by Name
-        enrollment_by_emp_id = {}
-        enrollment_by_name = {}
-        for e in enrollment_data:
-            emp_id = str(e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "").strip().upper()
-            name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
-            if emp_id and len(emp_id) > 1:
-                enrollment_by_emp_id[emp_id] = e
-            if name and len(name) > 2:
-                enrollment_by_name[name] = e
-
-        # Enhanced matching with multi-signal approach
-        from difflib import SequenceMatcher
-
-        def find_enrollment(claim):
-            # Signal 1: Exact name match (highest confidence)
-            claim_name = str(claim.get("Patient_Name") or claim.get("Patient_name") or
-                           claim.get("PATIENT_NAME") or claim.get("Name") or
-                           claim.get("EmpName") or "").strip().upper()
-            if claim_name and claim_name in enrollment_by_name:
-                return enrollment_by_name[claim_name], "name_exact"
-
-            # Signal 2: Fuzzy name match with strong requirements
-            if claim_name and len(claim_name) >= 5:
-                claim_parts = claim_name.split()
-                claim_first = claim_parts[0] if claim_parts else ""
-                claim_last = claim_parts[-1] if len(claim_parts) > 1 else ""
-
-                best_match = None
-                best_score = 0
-
-                for en_name, en_data in enrollment_by_name.items():
-                    en_parts = en_name.split()
-                    en_first = en_parts[0] if en_parts else ""
-                    en_last = en_parts[-1] if len(en_parts) > 1 else ""
-
-                    # Must have same first name
-                    if en_first and claim_first and en_first == claim_first:
-                        if en_last and claim_last:
-                            score = SequenceMatcher(None, en_last, claim_last).ratio()
-                            if score >= 0.65 and score > best_score:
-                                best_match = en_data
-                                best_score = score
-                        elif not en_last and not claim_last and len(en_name) > 3:
-                            best_match = en_data
-                            best_score = 1.0
-
-                if best_match:
-                    return best_match, "name_fuzzy"
-
-            # Signal 3: Name-in-ID (handles "BABU LAL MEENA" in "A21706BABU...")
-            # Only try for claims that have a name-like field
-            if claim_name and len(claim_name) >= 5:
-                for en_name, en_data in enrollment_by_name.items():
-                    en_parts = en_name.upper().split()
-                    for part in en_parts:
-                        if len(part) >= 5 and part in claim_name:
-                            # High specificity match
-                            return en_data, "name_in_id"
-
-            return None, "none"
-        
-        # Merge claims with enrollment - PRESERVE FULL CLAIM DETAILS for risk analysis
-        member_claims = {}  # Maps enrollment_key -> list of enriched claim dicts
-        matched_claim_count = 0
-        
-        for c in claims_data:
-            matched_enrollment, match_type = find_enrollment(c)
-            if matched_enrollment:
-                matched_claim_count += 1
-                # Create enrollment lookup keys: name + emp_code
-                keys = []
-                name = str(matched_enrollment.get("Name") or matched_enrollment.get("MemberName") or "").strip().upper()
-                emp_code = str(matched_enrollment.get("EmployeeCode") or matched_enrollment.get("EmpCode") or matched_enrollment.get("Employee_ID") or "").strip().upper()
                 if name:
-                    keys.append(name)
-                if emp_code:
-                    keys.append(emp_code)
+                    enrollment_by_id[name] = e
+            
+            member_claims = {}
+            for mr in case.get("match_results", []):
+                matched_id = mr.get("matched_enrollment_id")
+                claim = mr.get("claim_data", {})
+                amount = mr.get("amount", 0) or get_claim_amount(claim)
                 
-                # Enrich claim with full diagnostic/procedure details for underwriting
+                # Create enriched claim
                 enriched = {
-                    "claim_id": str(c.get("CLAIM_NUMBER") or c.get("GEN_Claim_Number") or c.get("CCN") or c.get("MDID") or ""),
-                    "match_type": match_type,
-                    "date_of_admission": str(c.get("DATE_OF_ADMISSION") or c.get("Date of admission") or ""),
-                    "date_of_discharge": str(c.get("DATE_OF_DISCHARGE") or c.get("DOD") or ""),
-                    "hospital_name": str(c.get("HOSPITAL_NAME") or c.get("Hospital_Name") or ""),
-                    "hospital_city": str(c.get("CITY") or ""),
-                    "treatment_type": str(c.get("MODE_OF_CLAIM") or ""),
-                    "procedure_code": "",
-                    "diagnosis_primary": str(c.get("AILMENT") or c.get("DISEASE OR AILMENT") or c.get("AILMENT_ICD") or ""),
-                    "diagnosis_secondary": "",
-                    "diagnosis_tertiary": "",
-                    "claim_amount": get_claim_amount(c),
-                    "approved_amount": safe_float(c.get("NET_AMOUNT_PAID") or c.get("Incurred_Amount") or c.get("ChequeAmt") or get_claim_amount(c)),
-                    "claim_status": str(c.get("Final_Status") or c.get("STATUS") or ""),
-                    "claim_type": str(c.get("CATEGORY") or c.get("CLAIM_TYPE") or c.get("CLAIM_TYPE_1") or ""),
-                    "gender": str(c.get("GENDER") or ""),
-                    "age": c.get("AGE_OF_PATIENT") or 0,
-                    "relationship": str(c.get("RELNSHP_WITH_PRIMARY_INSURED") or ""),
-                    "employee_id": str(c.get("EMPLOYEE_ID") or ""),
+                    "claim_id": str(claim.get("ClaimID") or claim.get("CCN") or claim.get("MDID") or claim.get("TAC_Tran_ID") or ""),
+                    "match_type": mr.get("match_method", ""),
+                    "date_of_admission": str(claim.get("ClaimDate") or claim.get("Date of admission") or claim.get("FromDate") or ""),
+                    "date_of_discharge": str(claim.get("DischargeDate") or claim.get("DOD") or claim.get("ToDate") or ""),
+                    "hospital_name": str(claim.get("Hospital") or ""),
+                    "diagnosis_primary": str(claim.get("Diagnosis") or ""),
+                    "claim_amount": amount,
+                    "approved_amount": amount,
+                    "claim_status": str(claim.get("ClaimStatus") or "Approved" or ""),
                 }
                 
-                for k in keys:
-                    if k not in member_claims:
-                        member_claims[k] = []
-                    member_claims[k].append(enriched)
-        
-        # Build structured data - DIRECT mapping (no dangerous redistribution)
-        for e in enrollment_data:
-            member_name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
-            emp_code = str(e.get("EmployeeCode") or e.get("EmpCode") or e.get("Employee_ID") or "").strip().upper()
+                if matched_id and str(matched_id) in enrollment_by_id:
+                    e = enrollment_by_id[str(matched_id)]
+                    name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
+                    eid = str(e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "").strip().upper()
+                    key = name or eid
+                    if key:
+                        if key not in member_claims:
+                            member_claims[key] = []
+                        member_claims[key].append(enriched)
             
-            # Collect claims: try name first, then emp_code
-            claims_for_member = []
-            if member_name and member_name in member_claims:
-                claims_for_member.extend(member_claims[member_name])
-            if emp_code and emp_code != member_name and emp_code in member_claims:
-                # Avoid duplicates when name and emp_code refer to same person
-                for c in member_claims[emp_code]:
-                    if c not in claims_for_member:
-                        claims_for_member.append(c)
-            
-            claim_count = len(claims_for_member)
-            # Sum claimed amounts - use robust helper
-            total_claim_amt = sum(get_claim_amount(c) for c in claims_for_member)
-            
-            # Extract pre-existing conditions from enrollment (MUST be before risk flags)
-            pec = get_pre_existing_conditions(e)
-            chronic = is_chronic(pec)
-            
-            # Extract claim details using robust helpers
-            first_claim = claims_for_member[0] if claims_for_member else {}
-            diagnosis_1, diagnosis_2 = get_diagnosis_fields(first_claim)
-            hospital_1 = get_hospital(first_claim)
-            claim_status = get_claim_status(first_claim)
-            total_approved = get_claim_amount(first_claim)
-            
-            # === ENHANCED RISK ASSESSMENT using enriched claim details ===
-            risk_flags = []
-            high_risk_diagnoses = []
-            chronic_diagnoses = []
-            
-            # Analyze ALL claims for this member to detect patterns
-            all_diagnoses = []
-            treatment_types = set()
-            total_surgery_count = 0
-            critical_procedures = set()
-            
-            high_risk_keywords = ["CANCER", "MALIGNANT", "METASTASIS", "CARCINOMA", "LYMPHOMA",
-                                 "LEUKEMIA", "TUMOR", "CHEMO", "RADIATION", "ONCOLOGY",
-                                 "CARDIAC", "MYOCARDIAL", "INFARCTION", "HEART ATTACK", "ANGIOPLASTY",
-                                 "STROKE", "CEREBROVASCULAR", "ANEURYSM", "BYPASS", "STENT",
-                                 "KIDNEY FAILURE", "DIALYSIS", "TRANSPLANT", "RENAL", "NEPHROPATHY",
-                                 "LIVER FAILURE", "CIRRHOSIS", "HEPATIC",
-                                 "DIABETES", "HYPERTENSION", "COPD", "ASTHMA", "EPILEPSY",
-                                 "ORGAN TRANSPLANT", "HIV", "AIDS"]
-            
-            chronic_keywords = ["DIABETES", "HYPERTENSION", "HYPOTHYROID", "ASTHMA", "COPD",
-                               "ARTHRITIS", "OSTEOPOROSIS", "EPILEPSY", "MIGRAINE", "THYROID",
-                               "KIDNEY DISEASE", "LIVER DISEASE", "HEART FAILURE"]
-            
-            for c in claims_for_member:
-                diag = (c.get("diagnosis_primary") or "").upper()
-                diag2 = (c.get("diagnosis_secondary") or "").upper()
-                diag3 = (c.get("diagnosis_tertiary") or "").upper()
-                treat = (c.get("treatment_type") or "").upper()
+            # Build structured data
+            for e in enrollment_data:
+                member_name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
+                emp_code = str(e.get("EmployeeCode") or e.get("EmpCode") or e.get("Employee_ID") or e.get("employee_id") or "").strip().upper()
+                claims_for_member = []
+                if member_name and member_name in member_claims:
+                    claims_for_member.extend(member_claims[member_name])
+                if emp_code and emp_code != member_name and emp_code in member_claims:
+                    for c in member_claims[emp_code]:
+                        if c not in claims_for_member:
+                            claims_for_member.append(c)
                 
-                if diag:
-                    all_diagnoses.append(diag)
-                if diag2:
-                    all_diagnoses.append(diag2)
-                if diag3:
-                    all_diagnoses.append(diag3)
-                if treat:
-                    treatment_types.add(treat)
+                claim_count = len(claims_for_member)
+                total_claim_amt = sum(get_claim_amount(c) for c in claims_for_member)
+                total_approved = total_claim_amt
                 
-                # Check high-risk conditions
-                for kw in high_risk_keywords:
-                    if kw in diag or kw in diag2 or kw in diag3 or kw in treat:
-                        if kw not in high_risk_diagnoses:
-                            high_risk_diagnoses.append(kw)
+                first_claim = claims_for_member[0] if claims_for_member else {}
+                diagnosis_1, diagnosis_2 = get_diagnosis_fields(first_claim)
+                hospital_1 = get_hospital(first_claim)
+                claim_status = get_claim_status(first_claim)
                 
-                # Check chronic conditions
-                for kw in chronic_keywords:
-                    if kw in diag or kw in diag2 or kw in diag3:
-                        if kw not in chronic_diagnoses:
-                            chronic_diagnoses.append(kw)
+                # Risk flags from claims
+                risk_flags = []
+                high_risk_keywords = ["CANCER", "MALIGNANT", "METASTASIS", "CARCINOMA", "CARDIAC", "MYOCARDIAL", 
+                                     "INFARCTION", "STROKE", "TRANSPLANT", "DIALYSIS", "CHEMO", "HIV", "AIDS"]
+                chronic_keywords = ["DIABETES", "HYPERTENSION", "ASTHMA", "COPD", "ARTHRITIS"]
+                all_diagnoses = []
+                for c in claims_for_member:
+                    diag = str(c.get("diagnosis_primary") or c.get("Diagnosis") or "").upper()
+                    if diag:
+                        all_diagnoses.append(diag)
+                        for kw in high_risk_keywords:
+                            if kw in diag and kw not in risk_flags:
+                                risk_flags.append("Critical diagnosis: " + kw)
+                        for kw in chronic_keywords:
+                            if kw in diag and "Chronic" not in " ".join(risk_flags):
+                                risk_flags.append("Chronic condition present")
+                                break
                 
-                # Count surgeries/procedures
-                proc = c.get("procedure_code") or ""
-                if proc and proc not in ("0000", "000000", ""):
-                    critical_procedures.add(proc)
+                if claim_count > 5:
+                    risk_flags.append("High claim frequency")
+                if total_claim_amt > 500000:
+                    risk_flags.append("High claim amount")
+                
+                sum_ins = e.get("SumInsured") or e.get("Sum_Insured") or e.get("sum_insured") or 0
+                member_age = e.get("Age") or 0
+                try:
+                    member_age = int(member_age)
+                except:
+                    member_age = 0
+                
+                pec = get_pre_existing_conditions(e)
+                chronic = is_chronic(pec)
+                if chronic:
+                    risk_flags.append("Pre-existing chronic condition")
+                
+                age_band = get_age_band(member_age)
+                
+                structured_data.append({
+                    "Name": e.get("Name") or e.get("MemberName") or "",
+                    "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
+                    "Age": member_age,
+                    "Age_Band": age_band,
+                    "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
+                    "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
+                    "Department": e.get("Department") or e.get("department") or "",
+                    "Sum_Insured": sum_ins,
+                    "Pre_Existing_Conditions": pec,
+                    "Chronic_Condition": chronic,
+                    "Claim_Count": claim_count,
+                    "Total_Claimed": round(total_claim_amt, 2),
+                    "Total_Approved": round(total_approved, 2),
+                    "Claim_Status": claim_status,
+                    "Diagnosis_1": diagnosis_1,
+                    "Diagnosis_2": diagnosis_2,
+                    "Hospital_1": hospital_1,
+                    "Risk_Flags": risk_flags,
+                })
+        elif not structured_data or not has_valid_ids:
+            # Calculate claims amounts (from approved field) for detailed per-member stats
+            claims_amounts = []
+            for c in claims_data:
+                try:
+                    amt = get_claim_amount(c)
+                    claims_amounts.append(amt)
+                except:
+                    claims_amounts.append(0)
+            total_claimed = sum(claims_amounts)
+    
+            # Build lookups for enrollment by Employee_ID/EmployeeCode AND by Name
+            # Build lookups for enrollment by Employee_ID/EmployeeCode AND by Name
+            enrollment_by_emp_id = {}
+            enrollment_by_name = {}
+            for e in enrollment_data:
+                emp_id = str(e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "").strip().upper()
+                name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
+                if emp_id and len(emp_id) > 1:
+                    enrollment_by_emp_id[emp_id] = e
+                if name and len(name) > 2:
+                    enrollment_by_name[name] = e
+    
+            # Enhanced matching with multi-signal approach
+            from difflib import SequenceMatcher
+    
+            def find_enrollment(claim):
+                # Signal 1: Exact name match (highest confidence)
+                claim_name = str(claim.get("Patient_Name") or claim.get("Patient_name") or
+                               claim.get("PATIENT_NAME") or claim.get("Name") or
+                               claim.get("EmpName") or "").strip().upper()
+                if claim_name and claim_name in enrollment_by_name:
+                    return enrollment_by_name[claim_name], "name_exact"
+    
+                # Signal 2: Fuzzy name match with strong requirements
+                if claim_name and len(claim_name) >= 5:
+                    claim_parts = claim_name.split()
+                    claim_first = claim_parts[0] if claim_parts else ""
+                    claim_last = claim_parts[-1] if len(claim_parts) > 1 else ""
+    
+                    best_match = None
+                    best_score = 0
+    
+                    for en_name, en_data in enrollment_by_name.items():
+                        en_parts = en_name.split()
+                        en_first = en_parts[0] if en_parts else ""
+                        en_last = en_parts[-1] if len(en_parts) > 1 else ""
+    
+                        # Must have same first name
+                        if en_first and claim_first and en_first == claim_first:
+                            if en_last and claim_last:
+                                score = SequenceMatcher(None, en_last, claim_last).ratio()
+                                if score >= 0.65 and score > best_score:
+                                    best_match = en_data
+                                    best_score = score
+                            elif not en_last and not claim_last and len(en_name) > 3:
+                                best_match = en_data
+                                best_score = 1.0
+    
+                    if best_match:
+                        return best_match, "name_fuzzy"
+    
+                # Signal 3: Name-in-ID (handles "BABU LAL MEENA" in "A21706BABU...")
+                # Only try for claims that have a name-like field
+                if claim_name and len(claim_name) >= 5:
+                    for en_name, en_data in enrollment_by_name.items():
+                        en_parts = en_name.upper().split()
+                        for part in en_parts:
+                            if len(part) >= 5 and part in claim_name:
+                                # High specificity match
+                                return en_data, "name_in_id"
+    
+                return None, "none"
             
-            # Risk flags
-            if claim_count > 5:
-                risk_flags.append("High claim frequency")
-            if total_claim_amt > 500000:
-                risk_flags.append("High claim amount")
-            if total_claim_amt > 0 and e.get("Sum_Insured", 0) > 0:
-                ratio = total_claim_amt / e.get("Sum_Insured", 1)
-                if ratio > 0.5:
-                    risk_flags.append("High claim-to-sum-insured ratio")
-            if chronic:
-                risk_flags.append("Chronic condition present")
+            # Merge claims with enrollment - PRESERVE FULL CLAIM DETAILS for risk analysis
+            member_claims = {}  # Maps enrollment_key -> list of enriched claim dicts
+            matched_claim_count = 0
             
-            if high_risk_diagnoses:
-                risk_flags.append(f"Critical diagnosis: {', '.join(high_risk_diagnoses[:3])}")
-            if chronic_diagnoses:
-                risk_flags.append(f"Chronic conditions: {', '.join(chronic_diagnoses[:3])}")
-            if len(critical_procedures) > 0:
-                risk_flags.append(f"Medical procedures: {len(critical_procedures)} types")
-            
-            # Age — try direct Age field first, then calculate from DOB, then from claims
-            member_age = 0
-            try:
-                member_age = int(e.get("AGE") or e.get("Age") or e.get("age") or 0)
-            except:
-                member_age = 0
-            if member_age == 0:
-                # Try to calculate from Date_of_Birth
-                dob = e.get("Date_of_Birth") or e.get("DOB") or e.get("dob") or e.get("Date of birth") or ""
-                if dob:
-                    try:
-                        dob_date = datetime.strptime(str(dob)[:10], "%Y-%m-%d")
-                        today = datetime.today()
-                        member_age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
-                    except:
-                        pass
-            if member_age == 0 and claims_for_member:
-                # Fall back to average of claim ages for this member
-                claim_ages = [safe_float(c.get("age") or 0) for c in claims_for_member if c.get("age")]
-                if claim_ages:
-                    member_age = int(sum(claim_ages) / len(claim_ages))
-            age_band = get_age_band(member_age)
-            
-            # Match Notion DB fields exactly
-            structured_data.append({
-                "Name": e.get("Name") or e.get("name") or "",
-                "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
-                "Age": member_age,
-                "Age_Band": age_band,
-                "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
-                "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
-                "Department": e.get("Department") or e.get("department") or "",
-                "Sum_Insured": e.get("Sum_Insured") or e.get("sum_insured") or e.get("Sum Insured") or 0,
-                "Pre_Existing_Conditions": pec,
-                "Chronic_Condition": chronic,
-                "Claim_Count": claim_count,
-                "Total_Claimed": round(total_claim_amt, 2),
-                "Total_Approved": round(total_approved, 2),
-                "Claim_Status": claim_status,
-                "Diagnosis_1": diagnosis_1,
-                "Diagnosis_2": diagnosis_2,
-                "Hospital_1": hospital_1,
-                "Has_Claims": claim_count > 0,
-                "risk_flags": risk_flags,
-                "claims_detail": [
-                    {
-                        "claim_id": c.get("claim_id", ""),
-                        "match_type": c.get("match_type", ""),
-                        "date_admission": c.get("date_of_admission", ""),
-                        "date_discharge": c.get("date_of_discharge", ""),
-                        "hospital": c.get("hospital_name", ""),
-                        "city": c.get("hospital_city", ""),
-                        "treatment": c.get("treatment_type", ""),
-                        "procedure_code": c.get("procedure_code", ""),
-                        "diagnosis_primary": c.get("diagnosis_primary", ""),
-                        "diagnosis_secondary": c.get("diagnosis_secondary", ""),
-                        "diagnosis_tertiary": c.get("diagnosis_tertiary", ""),
-                        "amount_claimed": get_claim_amount(c),
-                        "amount_approved": safe_float(c.get("approved_amount") or c.get("TOTAL_AMOUNT_APPROVED") or c.get("Incurred_Amount") or c.get("INCURREDAMOUNT") or c.get("Incurred Amount") or c.get("ChequeAmt") or c.get("Net_Amount_Paid") or c.get("Net_Amount_paid_Including_GST_After_TDS")),
-                        "status": c.get("claim_status", ""),
-                        "type": c.get("claim_type", "")
+            for c in claims_data:
+                matched_enrollment, match_type = find_enrollment(c)
+                if matched_enrollment:
+                    matched_claim_count += 1
+                    # Create enrollment lookup keys: name + emp_code
+                    keys = []
+                    name = str(matched_enrollment.get("Name") or matched_enrollment.get("MemberName") or "").strip().upper()
+                    emp_code = str(matched_enrollment.get("EmployeeCode") or matched_enrollment.get("EmpCode") or matched_enrollment.get("Employee_ID") or "").strip().upper()
+                    if name:
+                        keys.append(name)
+                    if emp_code:
+                        keys.append(emp_code)
+                    
+                    # Enrich claim with full diagnostic/procedure details for underwriting
+                    enriched = {
+                        "claim_id": str(c.get("CLAIM_NUMBER") or c.get("GEN_Claim_Number") or c.get("CCN") or c.get("MDID") or ""),
+                        "match_type": match_type,
+                        "date_of_admission": str(c.get("DATE_OF_ADMISSION") or c.get("Date of admission") or ""),
+                        "date_of_discharge": str(c.get("DATE_OF_DISCHARGE") or c.get("DOD") or ""),
+                        "hospital_name": str(c.get("HOSPITAL_NAME") or c.get("Hospital_Name") or ""),
+                        "hospital_city": str(c.get("CITY") or ""),
+                        "treatment_type": str(c.get("MODE_OF_CLAIM") or ""),
+                        "procedure_code": "",
+                        "diagnosis_primary": str(c.get("AILMENT") or c.get("DISEASE OR AILMENT") or c.get("AILMENT_ICD") or ""),
+                        "diagnosis_secondary": "",
+                        "diagnosis_tertiary": "",
+                        "claim_amount": get_claim_amount(c),
+                        "approved_amount": safe_float(c.get("NET_AMOUNT_PAID") or c.get("Incurred_Amount") or c.get("ChequeAmt") or get_claim_amount(c)),
+                        "claim_status": str(c.get("Final_Status") or c.get("STATUS") or ""),
+                        "claim_type": str(c.get("CATEGORY") or c.get("CLAIM_TYPE") or c.get("CLAIM_TYPE_1") or ""),
+                        "gender": str(c.get("GENDER") or ""),
+                        "age": c.get("AGE_OF_PATIENT") or 0,
+                        "relationship": str(c.get("RELNSHP_WITH_PRIMARY_INSURED") or ""),
+                        "employee_id": str(c.get("EMPLOYEE_ID") or ""),
                     }
-                    for c in claims_for_member
-                ],
-            })
+                    
+                    for k in keys:
+                        if k not in member_claims:
+                            member_claims[k] = []
+                        member_claims[k].append(enriched)
+            
+            # Build structured data - DIRECT mapping (no dangerous redistribution)
+            for e in enrollment_data:
+                member_name = str(e.get("Name") or e.get("MemberName") or "").strip().upper()
+                emp_code = str(e.get("EmployeeCode") or e.get("EmpCode") or e.get("Employee_ID") or "").strip().upper()
+                
+                # Collect claims: try name first, then emp_code
+                claims_for_member = []
+                if member_name and member_name in member_claims:
+                    claims_for_member.extend(member_claims[member_name])
+                if emp_code and emp_code != member_name and emp_code in member_claims:
+                    # Avoid duplicates when name and emp_code refer to same person
+                    for c in member_claims[emp_code]:
+                        if c not in claims_for_member:
+                            claims_for_member.append(c)
+                
+                claim_count = len(claims_for_member)
+                # Sum claimed amounts - use robust helper
+                total_claim_amt = sum(get_claim_amount(c) for c in claims_for_member)
+                
+                # Extract pre-existing conditions from enrollment (MUST be before risk flags)
+                pec = get_pre_existing_conditions(e)
+                chronic = is_chronic(pec)
+                
+                # Extract claim details using robust helpers
+                first_claim = claims_for_member[0] if claims_for_member else {}
+                diagnosis_1, diagnosis_2 = get_diagnosis_fields(first_claim)
+                hospital_1 = get_hospital(first_claim)
+                claim_status = get_claim_status(first_claim)
+                total_approved = get_claim_amount(first_claim)
+                
+                # === ENHANCED RISK ASSESSMENT using enriched claim details ===
+                risk_flags = []
+                high_risk_diagnoses = []
+                chronic_diagnoses = []
+                
+                # Analyze ALL claims for this member to detect patterns
+                all_diagnoses = []
+                treatment_types = set()
+                total_surgery_count = 0
+                critical_procedures = set()
+                
+                high_risk_keywords = ["CANCER", "MALIGNANT", "METASTASIS", "CARCINOMA", "LYMPHOMA",
+                                     "LEUKEMIA", "TUMOR", "CHEMO", "RADIATION", "ONCOLOGY",
+                                     "CARDIAC", "MYOCARDIAL", "INFARCTION", "HEART ATTACK", "ANGIOPLASTY",
+                                     "STROKE", "CEREBROVASCULAR", "ANEURYSM", "BYPASS", "STENT",
+                                     "KIDNEY FAILURE", "DIALYSIS", "TRANSPLANT", "RENAL", "NEPHROPATHY",
+                                     "LIVER FAILURE", "CIRRHOSIS", "HEPATIC",
+                                     "DIABETES", "HYPERTENSION", "COPD", "ASTHMA", "EPILEPSY",
+                                     "ORGAN TRANSPLANT", "HIV", "AIDS"]
+                
+                chronic_keywords = ["DIABETES", "HYPERTENSION", "HYPOTHYROID", "ASTHMA", "COPD",
+                                   "ARTHRITIS", "OSTEOPOROSIS", "EPILEPSY", "MIGRAINE", "THYROID",
+                                   "KIDNEY DISEASE", "LIVER DISEASE", "HEART FAILURE"]
+                
+                for c in claims_for_member:
+                    diag = (c.get("diagnosis_primary") or "").upper()
+                    diag2 = (c.get("diagnosis_secondary") or "").upper()
+                    diag3 = (c.get("diagnosis_tertiary") or "").upper()
+                    treat = (c.get("treatment_type") or "").upper()
+                    
+                    if diag:
+                        all_diagnoses.append(diag)
+                    if diag2:
+                        all_diagnoses.append(diag2)
+                    if diag3:
+                        all_diagnoses.append(diag3)
+                    if treat:
+                        treatment_types.add(treat)
+                    
+                    # Check high-risk conditions
+                    for kw in high_risk_keywords:
+                        if kw in diag or kw in diag2 or kw in diag3 or kw in treat:
+                            if kw not in high_risk_diagnoses:
+                                high_risk_diagnoses.append(kw)
+                    
+                    # Check chronic conditions
+                    for kw in chronic_keywords:
+                        if kw in diag or kw in diag2 or kw in diag3:
+                            if kw not in chronic_diagnoses:
+                                chronic_diagnoses.append(kw)
+                    
+                    # Count surgeries/procedures
+                    proc = c.get("procedure_code") or ""
+                    if proc and proc not in ("0000", "000000", ""):
+                        critical_procedures.add(proc)
+                
+                # Risk flags
+                if claim_count > 5:
+                    risk_flags.append("High claim frequency")
+                if total_claim_amt > 500000:
+                    risk_flags.append("High claim amount")
+                if total_claim_amt > 0 and e.get("Sum_Insured", 0) > 0:
+                    ratio = total_claim_amt / e.get("Sum_Insured", 1)
+                    if ratio > 0.5:
+                        risk_flags.append("High claim-to-sum-insured ratio")
+                if chronic:
+                    risk_flags.append("Chronic condition present")
+                
+                if high_risk_diagnoses:
+                    risk_flags.append(f"Critical diagnosis: {', '.join(high_risk_diagnoses[:3])}")
+                if chronic_diagnoses:
+                    risk_flags.append(f"Chronic conditions: {', '.join(chronic_diagnoses[:3])}")
+                if len(critical_procedures) > 0:
+                    risk_flags.append(f"Medical procedures: {len(critical_procedures)} types")
+                
+                # Age — try direct Age field first, then calculate from DOB, then from claims
+                member_age = 0
+                try:
+                    member_age = int(e.get("AGE") or e.get("Age") or e.get("age") or 0)
+                except:
+                    member_age = 0
+                if member_age == 0:
+                    # Try to calculate from Date_of_Birth
+                    dob = e.get("Date_of_Birth") or e.get("DOB") or e.get("dob") or e.get("Date of birth") or ""
+                    if dob:
+                        try:
+                            dob_date = datetime.strptime(str(dob)[:10], "%Y-%m-%d")
+                            today = datetime.today()
+                            member_age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
+                        except:
+                            pass
+                if member_age == 0 and claims_for_member:
+                    # Fall back to average of claim ages for this member
+                    claim_ages = [safe_float(c.get("age") or 0) for c in claims_for_member if c.get("age")]
+                    if claim_ages:
+                        member_age = int(sum(claim_ages) / len(claim_ages))
+                age_band = get_age_band(member_age)
+                
+                # Match Notion DB fields exactly
+                structured_data.append({
+                    "Name": e.get("Name") or e.get("name") or "",
+                    "Employee_ID": e.get("Employee_ID") or e.get("employee_id") or e.get("EmployeeCode") or e.get("EmpCode") or "",
+                    "Age": member_age,
+                    "Age_Band": age_band,
+                    "Gender": e.get("GENDER") or e.get("Gender") or e.get("gender") or "",
+                    "Relationship": e.get("Relationship") or e.get("relationship") or "SELF",
+                    "Department": e.get("Department") or e.get("department") or "",
+                    "Sum_Insured": e.get("Sum_Insured") or e.get("sum_insured") or e.get("Sum Insured") or 0,
+                    "Pre_Existing_Conditions": pec,
+                    "Chronic_Condition": chronic,
+                    "Claim_Count": claim_count,
+                    "Total_Claimed": round(total_claim_amt, 2),
+                    "Total_Approved": round(total_approved, 2),
+                    "Claim_Status": claim_status,
+                    "Diagnosis_1": diagnosis_1,
+                    "Diagnosis_2": diagnosis_2,
+                    "Hospital_1": hospital_1,
+                    "Has_Claims": claim_count > 0,
+                    "risk_flags": risk_flags,
+                    "claims_detail": [
+                        {
+                            "claim_id": c.get("claim_id", ""),
+                            "match_type": c.get("match_type", ""),
+                            "date_admission": c.get("date_of_admission", ""),
+                            "date_discharge": c.get("date_of_discharge", ""),
+                            "hospital": c.get("hospital_name", ""),
+                            "city": c.get("hospital_city", ""),
+                            "treatment": c.get("treatment_type", ""),
+                            "procedure_code": c.get("procedure_code", ""),
+                            "diagnosis_primary": c.get("diagnosis_primary", ""),
+                            "diagnosis_secondary": c.get("diagnosis_secondary", ""),
+                            "diagnosis_tertiary": c.get("diagnosis_tertiary", ""),
+                            "amount_claimed": get_claim_amount(c),
+                            "amount_approved": safe_float(c.get("approved_amount") or c.get("TOTAL_AMOUNT_APPROVED") or c.get("Incurred_Amount") or c.get("INCURREDAMOUNT") or c.get("Incurred Amount") or c.get("ChequeAmt") or c.get("Net_Amount_Paid") or c.get("Net_Amount_paid_Including_GST_After_TDS")),
+                            "status": c.get("claim_status", ""),
+                            "type": c.get("claim_type", "")
+                        }
+                        for c in claims_for_member
+                    ],
+                })
+            
+            # Basic insights
+            ai_insights = [
+                {
+                    "type": "pattern",
+                    "title": "Data Processing Complete",
+                    "description": f"Merged {len(enrollment_data)} enrollment records with {len(claims_data)} claims records",
+                    "severity": "low"
+                }
+            ]
+            
+            if total_claimed > 1000000:
+                ai_insights.append({
+                    "type": "risk",
+                    "title": "High Total Claims Detected",
+                    "description": f"Total claimed amount is ₹{total_claimed:,.2f} - review for potential premium adjustment",
+                    "severity": "high"
+                })
         
-        # Basic insights
-        ai_insights = [
-            {
-                "type": "pattern",
-                "title": "Data Processing Complete",
-                "description": f"Merged {len(enrollment_data)} enrollment records with {len(claims_data)} claims records",
-                "severity": "low"
-            }
-        ]
-        
-        if total_claimed > 1000000:
-            ai_insights.append({
-                "type": "risk",
-                "title": "High Total Claims Detected",
-                "description": f"Total claimed amount is ₹{total_claimed:,.2f} - review for potential premium adjustment",
-                "severity": "high"
-            })
-    
-    # Generate key stats
-    key_stats = {
-        "total_enrolled": total_enrolled,
-        "total_claims": total_claims,
-        "total_claimed": total_claimed,
-        "avg_claims_per_member": round(total_claims / total_enrolled, 2) if total_enrolled else 0,
-        "claims_with_enrollment": len(structured_data),
-        "high_risk_members": len([s for s in structured_data if s.get("risk_flags")])
-    }
-    
-    # Calculate analytics summary
-    matched_records = [r for r in structured_data if r.get("Claim_Count", 0) > 0]
-    total_claims_from_sd = sum(r.get("Claim_Count", 0) for r in matched_records)
-    total_claims_sd = len(claims_data)
-    matched_count_sd = len(matched_records)
-    unmatched_count_sd = total_claims_sd - matched_count_sd
-    
-    # Sum from claims_detail for accuracy
-    total_claimed_sd = sum(
-        safe_float(c.get("amount_claimed") or c.get("claim_amount"))
-        for r in matched_records
-        for c in r.get("claims_detail", [])
-    )
-    total_approved_sd = sum(safe_float(r.get("Total_Approved")) for r in matched_records)
-    
-    analytics = {
-        "overview": {
-            "total_claims": total_claims_sd,
-            "matched_claims": matched_count_sd,
-            "unmatched": unmatched_count_sd,
-            "quality_score": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0,
-            "match_rate": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0
-        },
-        "match_quality": {
-            "quality_score": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0,
-            "quality_rating": "Excellent" if matched_count_sd / total_claims_sd >= 0.95 else "Good" if matched_count_sd / total_claims_sd >= 0.8 else "Fair" if matched_count_sd / total_claims_sd >= 0.6 else "Poor"
-        },
-        "claims_analysis": {
-            "financial_summary": {
-                "total_claimed": total_claimed_sd,
-                "total_approved": total_approved_sd,
-                "total_paid": total_approved_sd * 0.9,  # Assume 90% approved
-                "approval_rate": round(total_approved_sd / total_claimed_sd * 100, 1) if total_claimed_sd else 0
-            },
-            "status_breakdown": {
-                "Pending": unmatched_count_sd,
-                "Matched": matched_count_sd,
-                "Paid": int(matched_count_sd * 0.7)
-            }
-        },
-        "demographics": {
-            "gender_distribution": {"Male": sum(1 for r in matched_records if str(r.get("Gender") or "").lower() in ["male","m"]), "Female": sum(1 for r in matched_records if str(r.get("Gender") or "").lower() in ["female","f"])},
-            "total_enrolled": total_enrolled
-        },
-        "claim_types": {},
-        "risk_indicators": [],
-        "recommendations": []
-    }
-    
-    # ── Compute claim-level analytics DIRECTLY from claims_data (no matching required)
-    # This ensures analytics always work even when enrollment matching fails
-    from collections import Counter
-    
-    # Gender: check structured_data first (enrollment), then claims_data GENDER field
-    gender_map = {"Male": 0, "Female": 0, "Other": 0}
-    
-    # First: try structured_data (enrollment records with Gender field)
-    for r in structured_data:
-        g = str(r.get("Gender") or "").strip()
-        if g.lower() in ["male", "m"]: gender_map["Male"] += 1
-        elif g.lower() in ["female", "f"]: gender_map["Female"] += 1
-        elif g: gender_map["Other"] += 1
-    
-    # Second: if structured_data has no gender, try claims_data GENDER field
-    if gender_map["Male"] == 0 and gender_map["Female"] == 0 and claims_data:
-        for c in claims_data:
-            g = str(c.get("GENDER") or "").strip()
-            if g.upper() == "M" or g.lower() == "male": gender_map["Male"] += 1
-            elif g.upper() == "F" or g.lower() == "female": gender_map["Female"] += 1
-            else: gender_map["Other"] += 1
-    
-    # Compute gender distribution as % of total (enrolled or claims with gender)
-    total_with_gender = gender_map["Male"] + gender_map["Female"] + gender_map["Other"]
-    if total_with_gender > 0:
-        gender_distribution_pct = {
-            "Male": round(gender_map["Male"] / total_with_gender * 100, 1),
-            "Female": round(gender_map["Female"] / total_with_gender * 100, 1),
-            "Other": round(gender_map["Other"] / total_with_gender * 100, 1)
+        # Generate key stats
+        key_stats = {
+            "total_enrolled": total_enrolled,
+            "total_claims": total_claims,
+            "total_claimed": total_claimed,
+            "avg_claims_per_member": round(total_claims / total_enrolled, 2) if total_enrolled else 0,
+            "claims_with_enrollment": len(structured_data),
+            "high_risk_members": len([s for s in structured_data if s.get("risk_flags")])
         }
-    else:
-        gender_distribution_pct = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
-    
-    claim_age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
-    for c in claims_data:
-        a = c.get("AGE_OF_PATIENT") or 0
-        if a <= 25: claim_age_bands["18-25"] += 1
-        elif a <= 35: claim_age_bands["26-35"] += 1
-        elif a <= 45: claim_age_bands["36-45"] += 1
-        elif a <= 55: claim_age_bands["46-55"] += 1
-        else: claim_age_bands["55+"] += 1
-    
-    # Always use the computed gender_distribution_pct (from structured_data first, then claims_data)
-    analytics["demographics"]["gender_distribution"] = gender_distribution_pct
-    
-    # Claim type breakdown from AILMENT field
-    ailment_counter = Counter()
-    for c in claims_data:
-        a = c.get("AILMENT") or c.get("DISEASE OR AILMENT") or "Unknown"
-        if len(a) > 80:
-            a = a[:80]
-        ailment_counter[a] += 1
-    
-    # Merge into existing claim_types (from matched records first, then add unmatched)
-    claim_type_counter = Counter()
-    if matched_records:
+        
+        # Calculate analytics summary
+        matched_records = [r for r in structured_data if r.get("Claim_Count", 0) > 0]
+        total_claims_from_sd = sum(r.get("Claim_Count", 0) for r in matched_records)
+        total_claims_sd = len(claims_data)
+        matched_count_sd = len(matched_records)
+        unmatched_count_sd = total_claims_sd - matched_count_sd
+        
+        # Sum from claims_detail for accuracy
+        total_claimed_sd = sum(
+            safe_float(c.get("amount_claimed") or c.get("claim_amount"))
+            for r in matched_records
+            for c in r.get("claims_detail", [])
+        )
+        total_approved_sd = sum(safe_float(r.get("Total_Approved")) for r in matched_records)
+        
+        analytics = {
+            "overview": {
+                "total_claims": total_claims_sd,
+                "matched_claims": matched_count_sd,
+                "unmatched": unmatched_count_sd,
+                "quality_score": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0,
+                "match_rate": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0
+            },
+            "match_quality": {
+                "quality_score": round(matched_count_sd / total_claims_sd * 100, 1) if total_claims_sd else 0,
+                "quality_rating": "Excellent" if matched_count_sd / total_claims_sd >= 0.95 else "Good" if matched_count_sd / total_claims_sd >= 0.8 else "Fair" if matched_count_sd / total_claims_sd >= 0.6 else "Poor"
+            },
+            "claims_analysis": {
+                "financial_summary": {
+                    "total_claimed": total_claimed_sd,
+                    "total_approved": total_approved_sd,
+                    "total_paid": total_approved_sd * 0.9,  # Assume 90% approved
+                    "approval_rate": round(total_approved_sd / total_claimed_sd * 100, 1) if total_claimed_sd else 0
+                },
+                "status_breakdown": {
+                    "Pending": unmatched_count_sd,
+                    "Matched": matched_count_sd,
+                    "Paid": int(matched_count_sd * 0.7)
+                }
+            },
+            "demographics": {
+                "gender_distribution": {"Male": sum(1 for r in matched_records if str(r.get("Gender") or "").lower() in ["male","m"]), "Female": sum(1 for r in matched_records if str(r.get("Gender") or "").lower() in ["female","f"])},
+                "total_enrolled": total_enrolled
+            },
+            "claim_types": {},
+            "risk_indicators": [],
+            "recommendations": []
+        }
+        
+        # ── Compute claim-level analytics DIRECTLY from claims_data (no matching required)
+        # This ensures analytics always work even when enrollment matching fails
+        from collections import Counter
+        
+        # Gender: check structured_data first (enrollment), then claims_data GENDER field
+        gender_map = {"Male": 0, "Female": 0, "Other": 0}
+        
+        # First: try structured_data (enrollment records with Gender field)
+        for r in structured_data:
+            g = str(r.get("Gender") or "").strip()
+            if g.lower() in ["male", "m"]: gender_map["Male"] += 1
+            elif g.lower() in ["female", "f"]: gender_map["Female"] += 1
+            elif g: gender_map["Other"] += 1
+        
+        # Second: if structured_data has no gender, try claims_data GENDER field
+        if gender_map["Male"] == 0 and gender_map["Female"] == 0 and claims_data:
+            for c in claims_data:
+                g = str(c.get("GENDER") or "").strip()
+                if g.upper() == "M" or g.lower() == "male": gender_map["Male"] += 1
+                elif g.upper() == "F" or g.lower() == "female": gender_map["Female"] += 1
+                else: gender_map["Other"] += 1
+        
+        # Compute gender distribution as % of total (enrolled or claims with gender)
+        total_with_gender = gender_map["Male"] + gender_map["Female"] + gender_map["Other"]
+        if total_with_gender > 0:
+            gender_distribution_pct = {
+                "Male": round(gender_map["Male"] / total_with_gender * 100, 1),
+                "Female": round(gender_map["Female"] / total_with_gender * 100, 1),
+                "Other": round(gender_map["Other"] / total_with_gender * 100, 1)
+            }
+        else:
+            gender_distribution_pct = {"Male": 0.0, "Female": 0.0, "Other": 0.0}
+        
+        claim_age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
+        for c in claims_data:
+            a = c.get("AGE_OF_PATIENT") or 0
+            if a <= 25: claim_age_bands["18-25"] += 1
+            elif a <= 35: claim_age_bands["26-35"] += 1
+            elif a <= 45: claim_age_bands["36-45"] += 1
+            elif a <= 55: claim_age_bands["46-55"] += 1
+            else: claim_age_bands["55+"] += 1
+        
+        # Always use the computed gender_distribution_pct (from structured_data first, then claims_data)
+        analytics["demographics"]["gender_distribution"] = gender_distribution_pct
+        
+        # Claim type breakdown from AILMENT field
+        ailment_counter = Counter()
+        for c in claims_data:
+            a = c.get("AILMENT") or c.get("DISEASE OR AILMENT") or "Unknown"
+            if len(a) > 80:
+                a = a[:80]
+            ailment_counter[a] += 1
+        
+        # Merge into existing claim_types (from matched records first, then add unmatched)
+        claim_type_counter = Counter()
+        if matched_records:
+            for r in matched_records:
+                for cd in r.get("claims_detail", []):
+                    t = cd.get("diagnosis_primary") or cd.get("claim_type") or "Unknown"
+                    if t:
+                        claim_type_counter[t] = claim_type_counter.get(t, 0) + 1
+        if not claim_type_counter:
+            claim_type_counter = ailment_counter
+        else:
+            for k, v in ailment_counter.items():
+                claim_type_counter[k] = claim_type_counter.get(k, 0) + v
+        
+        # Update analytics with complete data
+        analytics["claim_types"] = {k: v for k, v in sorted(claim_type_counter.items(), key=lambda x: -x[1])[:20]}
+        
+        # Status breakdown from Final_Status field
+        status_breakdown = Counter()
+        for c in claims_data:
+            s = c.get("Final_Status") or c.get("STATUS") or "Unknown"
+            status_breakdown[s] += 1
+        analytics["claims_analysis"]["status_breakdown"] = dict(status_breakdown)
+        
+        # Mode of claim breakdown
+        mode_breakdown = Counter()
+        for c in claims_data:
+            m = c.get("MODE_OF_CLAIM") or "Unknown"
+            mode_breakdown[m] += 1
+        analytics["mode_of_claim"] = dict(mode_breakdown)
+        
+        # Hospital type breakdown
+        ht_breakdown = Counter()
+        for c in claims_data:
+            ht = c.get("HOSPITAL_TYPE") or "Unknown"
+            ht_breakdown[ht] += 1
+        analytics["hospital_type"] = dict(ht_breakdown)
+        
+        # ── Build age_distribution from matched records
+        age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
         for r in matched_records:
-            for cd in r.get("claims_detail", []):
-                t = cd.get("diagnosis_primary") or cd.get("claim_type") or "Unknown"
-                if t:
-                    claim_type_counter[t] = claim_type_counter.get(t, 0) + 1
-    if not claim_type_counter:
-        claim_type_counter = ailment_counter
-    else:
-        for k, v in ailment_counter.items():
-            claim_type_counter[k] = claim_type_counter.get(k, 0) + v
-    
-    # Update analytics with complete data
-    analytics["claim_types"] = {k: v for k, v in sorted(claim_type_counter.items(), key=lambda x: -x[1])[:20]}
-    
-    # Status breakdown from Final_Status field
-    status_breakdown = Counter()
-    for c in claims_data:
-        s = c.get("Final_Status") or c.get("STATUS") or "Unknown"
-        status_breakdown[s] += 1
-    analytics["claims_analysis"]["status_breakdown"] = dict(status_breakdown)
-    
-    # Mode of claim breakdown
-    mode_breakdown = Counter()
-    for c in claims_data:
-        m = c.get("MODE_OF_CLAIM") or "Unknown"
-        mode_breakdown[m] += 1
-    analytics["mode_of_claim"] = dict(mode_breakdown)
-    
-    # Hospital type breakdown
-    ht_breakdown = Counter()
-    for c in claims_data:
-        ht = c.get("HOSPITAL_TYPE") or "Unknown"
-        ht_breakdown[ht] += 1
-    analytics["hospital_type"] = dict(ht_breakdown)
-    
-    # ── Build age_distribution from matched records
-    age_bands = {"18-25": 0, "26-35": 0, "36-45": 0, "46-55": 0, "55+": 0}
-    for r in matched_records:
-        band = r.get("Age_Band")
-        if band in age_bands:
-            age_bands[band] += 1
-        elif r.get("Age"):
-            a = int(r.get("Age", 0))
-            if a <= 25: age_bands["18-25"] += 1
-            elif a <= 35: age_bands["26-35"] += 1
-            elif a <= 45: age_bands["36-45"] += 1
-            elif a <= 55: age_bands["46-55"] += 1
-            else: age_bands["55+"] += 1
-    # If no matched records have age data, use claim-level age
-    if sum(age_bands.values()) == 0:
-        age_bands = claim_age_bands
-    analytics["demographics"]["age_distribution"] = age_bands
-    analytics["demographics"]["age_distribution"] = age_bands
-    
-    # ── Generate Underwriting Analysis & 3 Premium Versions ──
-    try:
-        metrics = calculate_underwriting_metrics(structured_data, key_stats, claims_data)
-        risk_score = calculate_risk_score(metrics)
-        factors = generate_underwriting_factors(metrics, risk_score)
-        impact = calculate_premium_impact(metrics, factors)
+            band = r.get("Age_Band")
+            if band in age_bands:
+                age_bands[band] += 1
+            elif r.get("Age"):
+                a = int(r.get("Age", 0))
+                if a <= 25: age_bands["18-25"] += 1
+                elif a <= 35: age_bands["26-35"] += 1
+                elif a <= 45: age_bands["36-45"] += 1
+                elif a <= 55: age_bands["46-55"] += 1
+                else: age_bands["55+"] += 1
+        # If no matched records have age data, use claim-level age
+        if sum(age_bands.values()) == 0:
+            age_bands = claim_age_bands
+        analytics["demographics"]["age_distribution"] = age_bands
+        analytics["demographics"]["age_distribution"] = age_bands
         
-        # Build 3 premium plan versions from the metrics
-        avg_si = 1000000  # 10 lac average
-        base_rate = (impact.get("base_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
-        final_rate = (impact.get("enrollment_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
-        risk_val = risk_score.get("risk_score", 50)
-        total_premium = impact.get("enrollment_premium", total_enrolled * 5000)
+        # ── Generate Underwriting Analysis & 3 Premium Versions ──
+        try:
+            metrics = calculate_underwriting_metrics(structured_data, key_stats, claims_data)
+            risk_score = calculate_risk_score(metrics)
+            factors = generate_underwriting_factors(metrics, risk_score)
+            impact = calculate_premium_impact(metrics, factors)
+            
+            # Build 3 premium plan versions from the metrics
+            avg_si = 1000000  # 10 lac average
+            base_rate = (impact.get("base_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
+            final_rate = (impact.get("enrollment_premium", 100000) / max(total_enrolled, 1)) / (avg_si / 100000)
+            risk_val = risk_score.get("risk_score", 50)
+            total_premium = impact.get("enrollment_premium", total_enrolled * 5000)
+            
+            rec_id = "standard"
+            if risk_val >= 75:
+                rec_id = "enterprise"
+            elif risk_val >= 50:
+                rec_id = "enhanced"
+            elif risk_val < 25 and total_enrolled < 50:
+                rec_id = "essential"
+            
+            plans = [
+                {"id": "essential", "plan_type": "essential", "name": "Essential Plan", "tier": "Entry Level",
+                 "description": "Base coverage without risk loadings",
+                 "premium_per_lac": round(base_rate * 0.85, 0), "premium": round(base_rate * 0.85 * total_enrolled * avg_si / 100000, 0),
+                 "coverage": "Basic", "coverage_tier": "Basic",
+                 "sum_insured_range": {"min": 50000, "max": 500000},
+                 "features": ["Base sum insured coverage", "Standard exclusions", "No additional loadings", "Basic hospitalization cover"],
+                 "exclusions": ["Pre-existing conditions", "Cosmetic treatments", "Adventure sports"],
+                 "suitability": "Best for young, healthy teams with no prior claims history.",
+                 "recommended": rec_id == "essential", "total_annual_premium": round(base_rate * 0.85 * total_enrolled * avg_si / 100000, 0)},
+                {"id": "standard", "plan_type": "standard", "name": "Standard Plan", "tier": "Mid-Market",
+                 "description": "Recommended coverage with applied adjustments",
+                 "premium_per_lac": round(final_rate, 0), "premium": round(final_rate * total_enrolled * avg_si / 100000, 0),
+                 "coverage": "Comprehensive", "coverage_tier": "Comprehensive",
+                 "sum_insured_range": {"min": 100000, "max": 1000000},
+                 "features": ["Full sum insured coverage", "Maternity benefit", "Day care procedures", "Ambulance cover"],
+                 "exclusions": ["Pre-existing conditions (waiting period)", "Cosmetic treatments", "Self-inflicted injuries"],
+                 "suitability": "Recommended for mid-sized teams with moderate claims experience.",
+                 "recommended": rec_id == "standard", "total_annual_premium": round(final_rate * total_enrolled * avg_si / 100000, 0)},
+                {"id": "enhanced", "plan_type": "enhanced", "name": "Enhanced Plan", "tier": "Premium Protection",
+                 "description": "Enhanced coverage with safety buffer",
+                 "premium_per_lac": round(final_rate * 1.05, 0), "premium": round(final_rate * 1.05 * total_enrolled * avg_si / 100000, 0),
+                 "coverage": "Premium", "coverage_tier": "Premium",
+                 "sum_insured_range": {"min": 200000, "max": 2000000},
+                 "features": ["Enhanced sum insured", "No co-pay for 60+ age", "International second opinion", "Annual health checkup"],
+                 "exclusions": ["Cosmetic treatments", "Adventure sports", "Self-inflicted injuries"],
+                 "suitability": "Recommended for large teams or high-loss-ratio groups requiring comprehensive coverage.",
+                 "recommended": rec_id == "enhanced", "total_annual_premium": round(final_rate * 1.05 * total_enrolled * avg_si / 100000, 0)},
+            ]
+        except Exception as e:
+            logger.warning(f"Underwriting analysis failed: {e}")
+            metrics, risk_score, factors, impact, plans = {}, {}, [], {}, []
         
-        rec_id = "standard"
-        if risk_val >= 75:
-            rec_id = "enterprise"
-        elif risk_val >= 50:
-            rec_id = "enhanced"
-        elif risk_val < 25 and total_enrolled < 50:
-            rec_id = "essential"
+        # Always add premium_three_plans to analytics before storing (both success and failure paths)
+        analytics["premium_three_plans"] = plans
+        analytics["demographics"]["gender_distribution"] = analytics["demographics"].get("gender_distribution", {"Male": 0.0, "Female": 0.0, "Other": 0.0})
         
-        plans = [
-            {"id": "essential", "plan_type": "essential", "name": "Essential Plan", "tier": "Entry Level",
-             "description": "Base coverage without risk loadings",
-             "premium_per_lac": round(base_rate * 0.85, 0), "premium": round(base_rate * 0.85 * total_enrolled * avg_si / 100000, 0),
-             "coverage": "Basic", "coverage_tier": "Basic",
-             "sum_insured_range": {"min": 50000, "max": 500000},
-             "features": ["Base sum insured coverage", "Standard exclusions", "No additional loadings", "Basic hospitalization cover"],
-             "exclusions": ["Pre-existing conditions", "Cosmetic treatments", "Adventure sports"],
-             "suitability": "Best for young, healthy teams with no prior claims history.",
-             "recommended": rec_id == "essential", "total_annual_premium": round(base_rate * 0.85 * total_enrolled * avg_si / 100000, 0)},
-            {"id": "standard", "plan_type": "standard", "name": "Standard Plan", "tier": "Mid-Market",
-             "description": "Recommended coverage with applied adjustments",
-             "premium_per_lac": round(final_rate, 0), "premium": round(final_rate * total_enrolled * avg_si / 100000, 0),
-             "coverage": "Comprehensive", "coverage_tier": "Comprehensive",
-             "sum_insured_range": {"min": 100000, "max": 1000000},
-             "features": ["Full sum insured coverage", "Maternity benefit", "Day care procedures", "Ambulance cover"],
-             "exclusions": ["Pre-existing conditions (waiting period)", "Cosmetic treatments", "Self-inflicted injuries"],
-             "suitability": "Recommended for mid-sized teams with moderate claims experience.",
-             "recommended": rec_id == "standard", "total_annual_premium": round(final_rate * total_enrolled * avg_si / 100000, 0)},
-            {"id": "enhanced", "plan_type": "enhanced", "name": "Enhanced Plan", "tier": "Premium Protection",
-             "description": "Enhanced coverage with safety buffer",
-             "premium_per_lac": round(final_rate * 1.05, 0), "premium": round(final_rate * 1.05 * total_enrolled * avg_si / 100000, 0),
-             "coverage": "Premium", "coverage_tier": "Premium",
-             "sum_insured_range": {"min": 200000, "max": 2000000},
-             "features": ["Enhanced sum insured", "No co-pay for 60+ age", "International second opinion", "Annual health checkup"],
-             "exclusions": ["Cosmetic treatments", "Adventure sports", "Self-inflicted injuries"],
-             "suitability": "Recommended for large teams or high-loss-ratio groups requiring comprehensive coverage.",
-             "recommended": rec_id == "enhanced", "total_annual_premium": round(final_rate * 1.05 * total_enrolled * avg_si / 100000, 0)},
-        ]
-    except Exception as e:
-        logger.warning(f"Underwriting analysis failed: {e}")
-        metrics, risk_score, factors, impact, plans = {}, {}, [], {}, []
-    
-    # Always add premium_three_plans to analytics before storing (both success and failure paths)
-    analytics["premium_three_plans"] = plans
-    analytics["demographics"]["gender_distribution"] = analytics["demographics"].get("gender_distribution", {"Male": 0.0, "Female": 0.0, "Other": 0.0})
-    
-    # Update case with structured data
-    await db.cases.update_one(
-        {"case_id": case_id},
-        {"$set": {
-            "structured_data": structured_data,
-            "ai_insights": ai_insights,
+        # Update case with structured data
+        await db.cases.update_one(
+            {"case_id": case_id},
+            {"$set": {
+                "structured_data": structured_data,
+                "ai_insights": ai_insights,
+                "key_stats": key_stats,
+                "analytics": analytics,  # Updated analytics with premium_three_plans + correct gender_distribution
+                "claims_analysis": analytics.get("claims_analysis", {}),
+                "metrics": metrics,
+                "impact": impact,
+                "factors": factors,
+                "plans": plans,
+                "status": "ai_processed",
+                "processed_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        
+        await log_audit("ai_processing_completed", user["id"], {
+            "case_id": case_id,
+            "enrollment_count": total_enrolled,
+            "claims_count": total_claims,
+            "structured_records": len(structured_data)
+        })
+        
+        # S45 FIX: Mark job as complete
+        await db.cases.update_one({"case_id": case_id}, {"$set": {
+            "ai_job_status": "complete",
+            "ai_job_completed": datetime.datetime.now(timezone.utc).isoformat()
+        }})
+        
+        return {
+            "success": True,
             "key_stats": key_stats,
-            "analytics": analytics,  # Updated analytics with premium_three_plans + correct gender_distribution
-            "claims_analysis": analytics.get("claims_analysis", {}),
             "metrics": metrics,
+            "analytics": analytics,
+            "claims_analysis": analytics.get("claims_analysis", {}),
             "impact": impact,
             "factors": factors,
             "plans": plans,
-            "status": "ai_processed",
-            "processed_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
-    
-    await log_audit("ai_processing_completed", user["id"], {
-        "case_id": case_id,
-        "enrollment_count": total_enrolled,
-        "claims_count": total_claims,
-        "structured_records": len(structured_data)
-    })
-    
-    return {
-        "success": True,
-        "key_stats": key_stats,
-        "metrics": metrics,
-        "analytics": analytics,
-        "claims_analysis": analytics.get("claims_analysis", {}),
-        "impact": impact,
-        "factors": factors,
-        "plans": plans,
-        "ai_insights": ai_insights,
-        "structured_data": structured_data[:100],  # Return first 100 for preview
-        "total_records": len(structured_data)
-    }
+            "ai_insights": ai_insights,
+            "structured_data": structured_data[:100],  # Return first 100 for preview
+            "total_records": len(structured_data)
+        }
+    except Exception as job_err:
+        # S45 FIX: Mark job as failed with error message
+        error_msg = str(job_err)
+        logger.error(f"AI processing failed for case {case_id}: {error_msg}")
+        await db.cases.update_one({"case_id": case_id}, {"$set": {
+            "ai_job_status": "failed",
+            "ai_job_error": error_msg,
+            "status": "ai_failed"
+        }})
+        raise HTTPException(status_code=500, detail=f"AI processing failed: {error_msg}")
 
 async def get_ai_mapping_suggestions(columns: List[str], sample_data: List[Dict]) -> List[Dict]:
     """Use OpenRouter (Gemma 4) to suggest column mappings"""
