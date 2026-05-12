@@ -956,6 +956,11 @@ async def upload_file(case_id: str, file: UploadFile = File(...), request: Reque
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format. Use CSV or Excel.")
         
+        # S1 FIX: Validate empty file — prevents cases with 0 records
+        if df.shape[0] == 0:
+            await db.cases.delete_one({"case_id": case_id})
+            raise HTTPException(status_code=400, detail="No records found in uploaded file. File appears to be empty or headers only.")
+        
         # Convert to records - handle datetimes for JSON serialization
         raw_data = []
         for _, row in df.iterrows():
@@ -1038,6 +1043,11 @@ async def upload_claims(case_id: str, file: UploadFile = File(...), request: Req
             df = pd.read_excel(io.BytesIO(content))
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format. Use CSV or Excel.")
+        
+        # S1 FIX: Validate empty file — prevents cases with 0 records
+        if df.shape[0] == 0:
+            await db.cases.delete_one({"case_id": case_id})
+            raise HTTPException(status_code=400, detail="No records found in uploaded file. File appears to be empty or headers only.")
         
         # Convert to records - handle datetimes for JSON serialization
         claims_data = []
@@ -1279,13 +1289,12 @@ def get_claim_amount(claim: Dict) -> float:
     ]
     for key in amt_keys:
         val = claim.get(key)
-        if val is not None and val != '-' and val != '':
+        if val is not None and str(val).strip() not in ['', '-', 'N/A', 'TBD', 'n/a', 'NA', 'None', 'null', 'Claim Pending']:
             try:
                 f = float(str(val).replace(",", "").replace("₹", "").replace("Rs", "").strip())
-                # Only return if non-zero (0 means field exists but no amount — try next field)
                 if f > 0:
                     return f
-            except:
+            except (ValueError, TypeError):
                 pass
     return 0.0
 def get_pre_existing_conditions(enrollment: Dict) -> str:
