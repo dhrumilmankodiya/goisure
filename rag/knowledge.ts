@@ -158,14 +158,26 @@ export const COVERAGE_TIERS = {
 export const GEMMA4_PROMPTS = {
   CLAIM_MATCHING: `Analyze enrollment and claims data to identify matching candidates.
   
-  Input: Enrollment records with Name, Age, DOB, Gender, Relationship (Employee_ID may be EMPTY)
-  Input: Claims records with EMPLOYEE_NO, INSURED_OR_EMPLOYEE_NAME, Patient_name, AGE, AMOUNT_CLAIMED_AL_REQUESTED, TOTAL_AMOUNT_APPROVED, Net_Amount_paid_Including_GST_After_TDS
+  IMPORTANT AMOUNT FIELD CONSTRAINTS (must follow exactly):
+  ONLY use these fields for claim amounts (in priority order):
+    1. Amount_Approved / AMOUNT_APPROVED / APPROVED_AMOUNT
+    2. Net_Amount_Paid / NET_AMOUNT_PAID / Net_Amount_Paid_Including_GST_After_TDS
+    3. INCURREDAMOUNT / Incurred_Amount
+    4. AMOUNT_CLAIMED_AL_REQUESTED / AMOUNT_CLAIMED / CLAIMEDAMOUNT
+    5. TOTAL_AMOUNT_APPROVED / Total_Amount_Claimed
+  Treat '-' (dash), 'N/A', 'TBD' as 0. Strip commas, Rs, symbols before parsing.
   
-  CRITICAL: Use TOTAL_AMOUNT_APPROVED for claim amounts (NOT AMOUNT_CLAIMED_AL_REQUESTED which includes rejected amounts).
-  If TOTAL_AMOUNT_APPROVED is empty/'-', fall back to Net_Amount_paid_Including_GST_After_TDS.
+  NEVER use as amounts: Any field with ID/Code/Number/Policy/Member/Employee in name.
+  Examples to NEVER read as amounts: POLICY_NUMBER, MEMBER_ID, EMPLOYEE_NO, AGE_OF_PATIENT, Serial_No.
+  
+  NEVER extract numbers from text fields (Remarks, Note, Description, Comment, Memo, etc.)
+  Example: "Remarks: Please approve 50000" — the 50000 is NOT a claim amount.
+  
+  Input: Enrollment records with Name, Age, DOB, Gender, Relationship (Employee_ID may be EMPTY)
+  Input: Claims records with EMPLOYEE_NO, INSURED_OR_EMPLOYEE_NAME, Patient_name, AGE, and AMOUNT fields above
   
   Task:
-  1. Match claims to enrollment records using EMPLOYEE_NO → EmployeeCode (exact match preferred)
+  1. Match claims to enrollment records using EMPLOYEE_NO -> EmployeeCode (exact match preferred)
   2. If EmployeeCode unavailable (empty in enrollment), use NAME + AGE + DOB fuzzy matching
   3. Return confidence score (0-100) for each match
   4. Identify unmatched claims that may belong to dependents (matched by name prefix/suffix)
@@ -185,21 +197,28 @@ export const GEMMA4_PROMPTS = {
 
   RISK_ANALYSIS: `Perform comprehensive risk analysis on enrollment and claims data.
   
+  IMPORTANT: Only calculate totals from the AUTHORIZED amount fields listed above.
+  If you see a field with ID/Code/Number in the name — it is NOT a financial amount.
+  Only fields named: Amount_Approved, NET_AMOUNT_PAID, CLAIMEDAMOUNT, TOTAL_AMOUNT_APPROVED are valid.
+  
   Input: Matched enrollment + claims data with member-level aggregation
   
   Analyze:
   1. Loss ratio (claims/premium)
   2. Claims frequency per member
   3. Average claim size
-  4. High-cost claims (>₹100,000)
+  4. High-cost claims (>100000)
   5. Age distribution risk
   6. Gender distribution
   7. Department concentration
   8. Chronic conditions (if diagnosed in claims)
   
+  Only cite ICD10 codes, diagnosis names, or procedure codes if a Diagnosis/ICD_CODE/Procedure_Code column exists in the data.
+  Do NOT fabricate medical codes.
+  
   Calculate:
-  - Base premium (sum_insured × rate)
-  - Burn cost premium (total_claims × 1.2)
+  - Base premium (sum_insured x rate)
+  - Burn cost premium (total_claims x 1.2)
   - Recommended adjustment percentage
   - Risk factors and loadings
   
@@ -222,6 +241,11 @@ export const GEMMA4_PROMPTS = {
 
   INSIGHT_GENERATION: `Generate actionable underwriting insights.
   
+  IMPORTANT: Only generate insights from actual data fields.
+  Only cite diagnosis codes or medical descriptions if the claims file has a column explicitly
+  named: Diagnosis / ICD_CODE / ICD10 / Procedure_Code / Diagnosis_Code.
+  Do NOT fabricate or infer medical information.
+  
   Analyze patterns and provide recommendations:
   1. Identify high-risk members (frequent claims, high amounts)
   2. Detect department-level patterns
@@ -229,7 +253,7 @@ export const GEMMA4_PROMPTS = {
   4. Age/gender-based observations
   5. Seasonal or temporal patterns in claims
   6. Hospital preference patterns
-  7. Diagnosis category trends
+  7. Diagnosis category trends (only if Diagnosis column exists)
   8. Pre-existing condition indicators
   
   Output format:
