@@ -1663,6 +1663,64 @@ async def get_match_results(case_id: str, request: Request = None):
         "match_rate": round(len(matched) / len(match_results) * 100, 1) if match_results else 0
     }
 
+# S27 FIX: Export matched data to Excel
+@api_router.get("/cases/{case_id}/export-matched")
+async def export_matched_data(case_id: str, request: Request):
+    """Export enrollment + claims matched data as Excel file"""
+    user = await get_current_user(request)
+    case = await db.cases.find_one({"case_id": case_id})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied: not your case")
+    
+    structured_data = case.get("structured_data", [])
+    claims_data = case.get("claims_data", [])
+    match_results = case.get("match_results", [])
+    
+    # Build matched records with claims info
+    matched_rows = []
+    for rec in structured_data:
+        emp_id = str(rec.get("Employee_ID") or rec.get("employee_id") or rec.get("EmployeeCode") or "")
+        rec_claims = [c for c in claims_data if str(c.get("Employee_ID") or c.get("EMPLOYEE_NO") or c.get("emp_no") or "") == emp_id
+                     or str(c.get("Patient_name") or c.get("Name") or "") == str(rec.get("Name") or "")]
+        total_claimed = sum(get_claim_amount(c) for c in rec_claims)
+        matched_rows.append({
+            "Employee_ID": emp_id,
+            "Name": rec.get("Name") or rec.get("name") or "",
+            "Age": rec.get("Age") or rec.get("age") or "",
+            "Gender": rec.get("Gender") or rec.get("gender") or "",
+            "Sum_Insured": rec.get("SumInsured") or rec.get("Sum_Insured") or rec.get("sum_insured") or "",
+            "Department": rec.get("Department") or "",
+            "Claim_Count": len(rec_claims),
+            "Total_Claimed": total_claimed,
+            "Status": "Matched" if rec_claims else "No Claims"
+        })
+    
+    import io
+    import openpyxl
+    
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Matched Data"
+    
+    if matched_rows:
+        headers = list(matched_rows[0].keys())
+        ws.append(headers)
+        for row in matched_rows:
+            ws.append(list(row.values()))
+    
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=matched_data_{case_id}.xlsx"}
+    )
+
 @api_router.get("/cases/{case_id}/analytics")
 async def get_analytics(case_id: str, request: Request = None):
     """Get AI matching analytics"""

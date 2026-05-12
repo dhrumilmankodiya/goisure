@@ -47,7 +47,18 @@ export default function EnrollmentTable({ data = [], loading = false }) {
     return [...filteredData].sort((a, b) => {
       let aVal = a[sortConfig.key], bVal = b[sortConfig.key];
       if (aVal == null) return 1; if (bVal == null) return -1;
-      const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+      // S29 FIX: Numeric sort for Age, SumInsured, Claims, and amount columns
+      // Detect if both values are numeric (or numeric strings like "₹1,00,000")
+      const aNum = parseFloat(String(aVal).replace(/[^0-9.-]/g, ''));
+      const bNum = parseFloat(String(bVal).replace(/[^0-9.-]/g, ''));
+      let cmp;
+      if (!isNaN(aNum) && !isNaN(bNum) && String(aVal).trim() !== '' && String(bVal).trim() !== '') {
+        // Numeric comparison
+        cmp = aNum < bNum ? -1 : aNum > bNum ? 1 : 0;
+      } else {
+        // String comparison for non-numeric fields (Name, Gender, etc.)
+        cmp = String(aVal).localeCompare(String(bVal));
+      }
       return sortConfig.direction === 'asc' ? cmp : -cmp;
     });
   }, [filteredData, sortConfig]);

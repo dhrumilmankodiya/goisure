@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { matchingApi } from '../lib/api';
 
 const MatchingPanel = ({ caseId, enrollmentUploaded, claimsUploaded, onMatchComplete }) => {
@@ -8,6 +8,8 @@ const MatchingPanel = ({ caseId, enrollmentUploaded, claimsUploaded, onMatchComp
   const [error, setError] = useState(null);
   const [overrideModal, setOverrideModal] = useState(null);
   const [overrideValue, setOverrideValue] = useState('');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const timerRef = useRef(null);
 
   const canRunMatch = enrollmentUploaded && claimsUploaded;
 
@@ -17,12 +19,31 @@ const MatchingPanel = ({ caseId, enrollmentUploaded, claimsUploaded, onMatchComp
     setStructuring(true);
     setError(null);
     setResults(null);
+    setElapsedSeconds(0);
+    
+    // S25/S26 FIX: Add timeout timer (3 minutes = 180 seconds)
+    const startTime = Date.now();
+    timerRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      setElapsedSeconds(elapsed);
+      if (elapsed >= 180) {
+        clearInterval(timerRef.current);
+      }
+    }, 1000);
+    
     try {
       const response = await matchingApi.runMatch(caseId);
+      clearInterval(timerRef.current);
       setResults(response.data);
       if (onMatchComplete) onMatchComplete(response.data);
     } catch (err) {
-      setError(err.response?.data?.error || 'Matching failed');
+      clearInterval(timerRef.current);
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      if (elapsed >= 180) {
+        setError('Analysis timed out after 3 minutes. Please try again or contact support.');
+      } else {
+        setError(err.response?.data?.error || 'Matching failed. Please try again.');
+      }
     } finally {
       setLoading(false);
       setStructuring(false);
@@ -122,6 +143,8 @@ const MatchingPanel = ({ caseId, enrollmentUploaded, claimsUploaded, onMatchComp
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex flex-col items-center justify-center py-16 px-8">
           <div className="w-16 h-16 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-6"></div>
+          {/* S25 FIX: Show elapsed time counter */}
+          <p className="text-sm font-mono text-gray-400 mb-4">{elapsedSeconds}s</p>
           <h3 className="text-xl font-semibold text-gray-900 mb-2">Processing Your Files</h3>
           <p className="text-gray-500 text-center text-sm mb-2">AI is analyzing and structuring your enrollment and claims data</p>
           <div className="flex items-center gap-4 text-xs text-gray-400 mt-6">
