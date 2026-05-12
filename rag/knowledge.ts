@@ -3,12 +3,47 @@
 // UPDATED: Field mapping instructions based on QA test results (May 8, 2026)
 //
 // IMPORTANT FIELD MAPPING NOTES:
-// UPDATED: May 11, 2026 — Gender, Date Parsing, and Claims Amount fixes
+// UPDATED: May 11-12, 2026 — Amount Field Constraints, Text Field Exclusions, Diagnosis Rules
+//
+// CRITICAL AMOUNT FIELD CONSTRAINTS (S23, S48 — Preventing hallucinated amounts):
+// Gemma 4 MUST ONLY read amounts from these EXACT field names (in priority order):
+//   1. Amount_Approved / AMOUNT_APPROVED / APPROVED_AMOUNT / amount_approved
+//   2. Net_Amount_Paid / NET_AMOUNT_PAID / Net_Amount_Paid_Including_GST_After_TDS
+//   3. Amount_Paid / Claim_Paid / Settled_Amount
+//   4. INCURREDAMOUNT / Incurred_Amount / Incurred Amount / incurred_amount
+//   5. AMOUNT_CLAIMED_AL_REQUESTED / AMOUNT_CLAIMED / CLAIMEDAMOUNT
+//   6. Net_Amount_paid_Including_GST_After_TDS (note: lowercase 'paid')
+//   7. ChequeAmt / cheque_amt / CHEQUE_AMT
+//   8. Amount_Claimed / amount_claimed / Claimed_Amount / claimed_amount / CLAIMED_AMOUNT
+//   9. Billed_Amount / GROSS_AMOUNT / gross_amount
+//   10. TOTAL_AMOUNT_APPROVED / total_amount_approved / Total_Amount_Claimed
+// Treat '-' (dash), 'N/A', 'TBD', 'Claim Pending', empty strings as 0.
+// Strip commas, ₹ symbols, Rs, and whitespace before parsing.
+//
+// FIELDS THAT ARE NEVER AMOUNTS (S23 — These are identifiers, NOT financial data):
+//   - Any field with: ID, Code, Number, Policy, Member, Employee, Serial, Ref, Claim#, Invoice
+//   - Example: POLICY_NUMBER, MEMBER_ID, EMPLOYEE_NO, CLAIM_NO, POLICY_SERIAL, MEMBER_CODE
+//   - Example: AGE, AGE_OF_PATIENT, Serial_No, Ref_No, Invoice_No, Claim_ID, Member_Number
+//   - If the field name contains a NUMBER pattern (like "15" in POLICY_15) it is STILL an ID
+//   - If the field looks like it could be a count or code (6+ digits, repeating pattern), it is NOT an amount
+//
+// TEXT FIELDS TO NEVER READ AS AMOUNTS (S48 — Free-text fields with embedded numbers):
+//   - Remarks / Note / Description / Comment / Instruction / Reason / Memo
+//   - Text / Narrative / Admin / Status_text / Claim_Notes / Doctor_Notes / Observations
+//   - Example: "Remarks: Please approve" — the "Please approve" is NOT an amount
+//   - Example: "Description: Claim settled for 50000" — only 50000 is the amount (from Amount field)
+//   - NEVER extract numbers from text fields. Text fields contain narrative, not financial data.
+//
+// DIAGNOSIS FIELD EXCLUSIONS (S47 — No fabricated diagnosis codes):
+//   - Only cite ICD10 codes, diagnosis names, or procedure codes if the claims file has a column
+//     explicitly named: Diagnosis / ICD_CODE / ICD10 / Procedure_Code / Diagnosis_Code
+//   - Do NOT generate or infer medical codes. "J18.9" or "Pneumonia" only if column exists.
+//   - Fabricated diagnosis codes could justify wrong claim denials — this is a legal liability.
 //
 // 1. Enrollment records may NOT have an Employee_ID/EmployeeCode field.
 //    When absent, match claims to enrollment using NAME + DOB + Relationship (not just name alone).
 //    Claims often have: EMPLOYEE_NO, INSURED_OR_EMPLOYEE_NAME, Patient_name
-//    Fallback matching order: EMPLOYEE_NO (exact) → Patient_name + AGE (fuzzy) → INSURED_OR_EMPLOYEE_NAME (fuzzy)
+//    Fallback matching order: EMPLOYEE_NO (exact) -> Patient_name + AGE (fuzzy) -> INSURED_OR_EMPLOYEE_NAME (fuzzy)
 //
 // 2. Claim amounts — use the following priority order:
 //    a) Amount_Approved / AMOUNT_APPROVED / APPROVED_AMOUNT (BEST — approved amount)
@@ -22,7 +57,7 @@
 // 3. Gender normalization (CRITICAL — enrollment often lacks gender, use claims_data):
 //    - The GENDER field exists in claims_data, NOT in enrollment (raw_data).
 //    - Values: 'M'/'F' (single uppercase letter), or 'Male'/'Female'/'male'/'female'.
-//    - Always normalize: M/m/Male/male → 'Male', F/f/Female/female → 'Female'.
+//    - Always normalize: M/m/Male/male -> 'Male', F/f/Female/female -> 'Female'.
 //    - Gender distribution must be computed from claims_data GENDER, not structured_data.
 //    - Output as PERCENTAGE of claims (not raw counts): Male 47%, Female 53%, Other 0%.
 //
