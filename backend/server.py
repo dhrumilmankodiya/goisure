@@ -1507,6 +1507,29 @@ async def perform_ai_matching(enrollment_data: List[Dict], claims_data: List[Dic
                         match_method = mtype
                         confidence = 90
                         break
+                # S7 FIX: Numeric ID fuzzy fallback — handles EMP001 vs E001, EMP00001 vs 1
+                # Extract only the numeric portion of each ID and compare similarity
+                if not matched:
+                    claim_nums = re.sub(r'[^0-9]', '', claim_emp_id)
+                    if claim_nums:
+                        best_score = 0
+                        best_match = None
+                        for key in enrollment_lookup:
+                            enrol_nums = re.sub(r'[^0-9]', '', key)
+                            if enrol_nums and len(claim_nums) >= 3 and len(enrol_nums) >= 3:
+                                score = SequenceMatcher(None, claim_nums, enrol_nums).ratio()
+                                if score >= 0.65:
+                                    # Prefer exact suffix match (EMP001 matches E001 if both end in "001")
+                                    suffix_match = claim_nums[-4:] == enrol_nums[-4:] and len(claim_nums) >= 4
+                                    adjusted_score = score + 0.15 if suffix_match else score
+                                    if adjusted_score > best_score:
+                                        best_score = adjusted_score
+                                        best_match = key
+                        if best_match and best_score > 0:
+                            idx, enrol, mtype = enrollment_lookup[best_match]
+                            matched = (idx, enrol)
+                            match_method = "NUMERIC_ID_FUZZY"
+                            confidence = int(best_score * 80)  # 80-90 confidence range
 
         # ── 2. Exact member ID match
         if not matched and claim_mem_id:
