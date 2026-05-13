@@ -888,7 +888,7 @@ async def get_case(case_id: str, request: Request):
     
     # RBAC: agents/admins can only access their own cases. Underwriters can see submitted cases.
     if user["role"] in ["agent", "admin"]:
-        if case.get("agent_id") != user["id"]:
+        if str(case.get("agent_id")) != user["id"]:
             raise HTTPException(status_code=403, detail="Access denied: not your case")
     elif user["role"] == "underwriter":
         if case.get("status") not in ["submitted", "under_review", "approved", "rejected"]:
@@ -904,7 +904,7 @@ async def update_case(case_id: str, data: CaseUpdate, request: Request):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
@@ -924,7 +924,7 @@ async def delete_case(case_id: str, request: Request):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] not in ["admin"] and (user["role"] == "agent" and case["agent_id"] != user["id"]):
+    if user["role"] not in ["admin"] and (user["role"] == "agent" and str(case["agent_id"]) != user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
     
     await db.cases.delete_one({"case_id": case_id})
@@ -941,7 +941,7 @@ async def upload_file(case_id: str, file: UploadFile = File(...), request: Reque
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     # Read file
@@ -1029,7 +1029,7 @@ async def upload_claims(case_id: str, file: UploadFile = File(...), request: Req
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     # Read file
@@ -1114,7 +1114,7 @@ async def run_ai_matching(case_id: str, request: Request = None):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     # Get enrollment and claims data
@@ -1647,7 +1647,7 @@ async def get_match_results(case_id: str, request: Request = None):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     match_results = case.get("match_results", [])
@@ -1671,7 +1671,7 @@ async def export_matched_data(case_id: str, request: Request):
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     structured_data = case.get("structured_data", [])
@@ -1736,9 +1736,8 @@ async def get_ai_status(case_id: str, request: Request = None):
     
     elapsed_seconds = 0
     if started and status == "processing":
-        import datetime
-        started_dt = datetime.datetime.fromisoformat(started.replace("Z", "+00:00"))
-        elapsed_seconds = (datetime.datetime.now(timezone.utc) - started_dt).seconds
+        started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        elapsed_seconds = (datetime.now(timezone.utc) - started_dt).seconds
     
     return {
         "status": status,
@@ -1758,7 +1757,7 @@ async def get_analytics(case_id: str, request: Request = None):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     match_results = case.get("match_results", [])
@@ -1826,7 +1825,7 @@ async def process_ai(case_id: str, request: Request = None):
             raise HTTPException(status_code=404, detail="Case not found")
         
         # Admins can access any case; agents only their own
-        if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+        if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
             raise HTTPException(status_code=403, detail="Access denied: not your case")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"User validation failed: {e}")
@@ -1843,8 +1842,7 @@ async def process_ai(case_id: str, request: Request = None):
             raise HTTPException(status_code=400, detail="No claims data found")
         
         # S45 FIX: Track job status for polling
-        import datetime
-        job_started = datetime.datetime.now(timezone.utc).isoformat()
+        job_started = datetime.now(timezone.utc).isoformat()
         await db.cases.update_one({"case_id": case_id}, {"$set": {
             "ai_job_status": "processing",
             "ai_job_started": job_started,
@@ -2635,7 +2633,7 @@ async def process_ai(case_id: str, request: Request = None):
         # S45 FIX: Mark job as complete
         await db.cases.update_one({"case_id": case_id}, {"$set": {
             "ai_job_status": "complete",
-            "ai_job_completed": datetime.datetime.now(timezone.utc).isoformat()
+            "ai_job_completed": datetime.now(timezone.utc).isoformat()
         }})
         
         return {
@@ -2787,7 +2785,7 @@ async def apply_mapping(case_id: str, overrides: List[MappingOverride], request:
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     raw_data = case.get("raw_data", [])
@@ -2866,7 +2864,7 @@ async def correct_data(case_id: str, data: CaseSubmit, request: Request):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     await db.cases.update_one(
@@ -2890,7 +2888,7 @@ async def submit_case(case_id: str, request: Request):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     await db.cases.update_one(
@@ -3642,7 +3640,7 @@ async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None,
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     structured_data = case.get("structured_data", [])
@@ -3875,7 +3873,7 @@ async def get_case_members(
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     structured_data = case.get("structured_data", [])
     members = list(structured_data) if isinstance(structured_data, list) else []
@@ -3957,7 +3955,7 @@ async def get_claim_breakdown(case_id: str, request: Request):
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     # ── PRIMARY: Always start from claims_data ─────────────────────────────────
@@ -4159,7 +4157,7 @@ async def get_claim_trends(case_id: str, request: Request):
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     claims_data = case.get("claims_data", [])
@@ -4303,7 +4301,7 @@ async def submit_to_underwriter(case_id: str, notes: Optional[str] = None, reque
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     await db.cases.update_one({"case_id": case_id}, {"$set": {"status": "Pending Underwriter Review", "underwriter_review_status": "pending", "submitted_by": user["id"], "submitted_at": datetime.now(timezone.utc).isoformat(), "submission_notes": notes}})
     underwriters = await db.users.find({"role": "underwriter"}).to_list(None)
@@ -4585,7 +4583,7 @@ async def apply_mapping(case_id: str, overrides: List[MappingOverride], request:
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     raw_data = case.get("raw_data", [])
@@ -4664,7 +4662,7 @@ async def correct_data(case_id: str, data: CaseSubmit, request: Request):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     await db.cases.update_one(
@@ -4688,7 +4686,7 @@ async def submit_case(case_id: str, request: Request):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     await db.cases.update_one(
@@ -5440,7 +5438,7 @@ async def generate_underwriting_ai(case_id: str, data: UnderwritingInput = None,
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     structured_data = case.get("structured_data", [])
@@ -5673,7 +5671,7 @@ async def get_case_members(
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     structured_data = case.get("structured_data", [])
     members = list(structured_data) if isinstance(structured_data, list) else []
@@ -5755,7 +5753,7 @@ async def get_claim_breakdown(case_id: str, request: Request):
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     # ── PRIMARY: Always start from claims_data ─────────────────────────────────
@@ -5957,7 +5955,7 @@ async def get_claim_trends(case_id: str, request: Request):
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     
     claims_data = case.get("claims_data", [])
@@ -6101,7 +6099,7 @@ async def submit_to_underwriter(case_id: str, notes: Optional[str] = None, reque
     case = await db.cases.find_one({"case_id": case_id})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if user["role"] in ["agent", "admin"] and case.get("agent_id") != user["id"]:
+    if user["role"] in ["agent", "admin"] and str(case.get("agent_id")) != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied: not your case")
     await db.cases.update_one({"case_id": case_id}, {"$set": {"status": "Pending Underwriter Review", "underwriter_review_status": "pending", "submitted_by": user["id"], "submitted_at": datetime.now(timezone.utc).isoformat(), "submission_notes": notes}})
     underwriters = await db.users.find({"role": "underwriter"}).to_list(None)
